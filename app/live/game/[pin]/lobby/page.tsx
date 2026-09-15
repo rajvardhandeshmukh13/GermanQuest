@@ -28,6 +28,7 @@ function GameLobbyContent() {
 
   const profile = usePlayerStats();
   const [game, setGame] = React.useState<LiveGame | null>(null);
+  const hasNavigatedRef = React.useRef(false);
 
   // Subscribe to real-time game updates
   React.useEffect(() => {
@@ -40,20 +41,23 @@ function GameLobbyContent() {
     const unsubscribe = subscribeToLiveGame(pin, (updatedGame) => {
       setGame(updatedGame);
       // Auto-navigate to play screen when status changes
-      if (updatedGame.status !== "lobby") {
-        router.push(
-          `/live/game/${pin}/play?role=${role}&playerId=${playerId}`
-        );
+      if (updatedGame.status !== "lobby" && !hasNavigatedRef.current) {
+        hasNavigatedRef.current = true;
+        const targetUrl = playerId
+          ? `/live/game/${pin}/play?role=${role}&playerId=${encodeURIComponent(playerId)}`
+          : `/live/game/${pin}/play?role=${role}`;
+        router.push(targetUrl);
       }
     });
 
     return () => unsubscribe();
   }, [pin, role, playerId, router]);
 
-  const handleStartGame = () => {
+  const handleStartGame = async () => {
     if (!pin) return;
-    const started = startLiveGame(pin);
-    if (started) {
+    const started = await startLiveGame(pin);
+    if (started && !hasNavigatedRef.current) {
+      hasNavigatedRef.current = true;
       router.push(`/live/game/${pin}/play?role=host`);
     }
   };

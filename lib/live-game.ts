@@ -197,8 +197,15 @@ export function addDemoPlayers(pin: string, count: number = 5): LiveGame | null 
   return game;
 }
 
-export function startLiveGame(pin: string): LiveGame | null {
+export async function startLiveGame(pin: string): Promise<LiveGame | null> {
   const game = getLiveGameByPin(pin);
+
+  try {
+    await startFirebaseLiveGame(pin);
+  } catch (err) {
+    console.warn("startFirebaseLiveGame warning:", err);
+  }
+
   if (!game) return null;
 
   game.status = "question";
@@ -214,35 +221,33 @@ export function startLiveGame(pin: string): LiveGame | null {
   });
 
   broadcastLocalUpdate(pin, game);
-
-  // Async sync with Firebase
-  startFirebaseLiveGame(pin).catch(() => {});
-
   return game;
 }
 
-export function submitLiveAnswer(
+export async function submitLiveAnswer(
   pin: string,
   playerId: string,
   answerIndex: number,
   timeRemainingSeconds: number,
   correctAnswerIndex: number
-): LiveGame | null {
+): Promise<LiveGame | null> {
+  try {
+    await submitFirebaseLiveAnswer(
+      pin,
+      playerId,
+      answerIndex,
+      timeRemainingSeconds,
+      correctAnswerIndex
+    );
+  } catch (err) {
+    console.warn("submitFirebaseLiveAnswer warning:", err);
+  }
+
   const game = getLiveGameByPin(pin);
-
-  // Async Firebase submit
-  submitFirebaseLiveAnswer(
-    pin,
-    playerId,
-    answerIndex,
-    timeRemainingSeconds,
-    correctAnswerIndex
-  ).catch(() => {});
-
   if (!game) return null;
 
   const player = game.players.find((p) => p.id === playerId);
-  if (!player || player.selectedAnswerIndex !== undefined) return game;
+  if (!player || typeof player.selectedAnswerIndex === "number") return game;
 
   const isCorrect = answerIndex === correctAnswerIndex;
   player.selectedAnswerIndex = answerIndex;
@@ -270,12 +275,14 @@ export function submitLiveAnswer(
   return game;
 }
 
-export function simulateDemoAnswers(pin: string, correctAnswerIndex: number): LiveGame | null {
+export async function simulateDemoAnswers(pin: string, correctAnswerIndex: number): Promise<LiveGame | null> {
+  try {
+    await finalizeFirebaseQuestionResults(pin, correctAnswerIndex);
+  } catch (err) {
+    console.warn("finalizeFirebaseQuestionResults warning:", err);
+  }
+
   const game = getLiveGameByPin(pin);
-
-  // Sync Firebase question finalization
-  finalizeFirebaseQuestionResults(pin, correctAnswerIndex).catch(() => {});
-
   if (!game) return null;
 
   game.players.forEach((p) => {
@@ -335,15 +342,17 @@ export function recalculateRanks(game: LiveGame) {
   });
 }
 
-export function advanceLiveGameState(
+export async function advanceLiveGameState(
   pin: string,
   nextStatus: LiveGameStatus
-): LiveGame | null {
+): Promise<LiveGame | null> {
+  try {
+    await advanceFirebaseLiveGameState(pin, nextStatus);
+  } catch (err) {
+    console.warn("advanceFirebaseLiveGameState warning:", err);
+  }
+
   const game = getLiveGameByPin(pin);
-
-  // Async sync with Firebase
-  advanceFirebaseLiveGameState(pin, nextStatus).catch(() => {});
-
   if (!game) return null;
 
   game.status = nextStatus;
@@ -373,15 +382,18 @@ export function subscribeToLiveGame(
 ): () => void {
   if (typeof window === "undefined") return () => {};
 
-  // Subscribe to Firebase Realtime Database
+  let hasReceivedFirebaseUpdate = false;
+
+  // Subscribe to Firebase Realtime Database (Authoritative)
   const unsubFirebase = subscribeToFirebaseLiveGame(pin, (fbGame) => {
+    hasReceivedFirebaseUpdate = true;
     broadcastLocalUpdate(pin, fbGame);
     callback(fbGame);
   });
 
-  // Local BroadcastChannel / storage listener
+  // Local BroadcastChannel / storage listener (Only fallback if Firebase hasn't fired)
   const handleStorage = (e: StorageEvent) => {
-    if (e.key === getStorageKey(pin) && e.newValue) {
+    if (!hasReceivedFirebaseUpdate && e.key === getStorageKey(pin) && e.newValue) {
       try {
         callback(JSON.parse(e.newValue));
       } catch {
@@ -396,7 +408,7 @@ export function subscribeToLiveGame(
   if ("BroadcastChannel" in window) {
     bc = new BroadcastChannel(CHANNEL_NAME);
     bc.onmessage = (e) => {
-      if (e.data?.pin === pin && e.data?.game) {
+      if (!hasReceivedFirebaseUpdate && e.data?.pin === pin && e.data?.game) {
         callback(e.data.game);
       }
     };

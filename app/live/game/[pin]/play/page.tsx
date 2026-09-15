@@ -112,6 +112,13 @@ function LiveGamePlayContent() {
     );
   }
 
+  const [optimisticAnswer, setOptimisticAnswer] = React.useState<number | null>(null);
+
+  // Clear optimistic answer state when moving to a new question or changing status
+  React.useEffect(() => {
+    setOptimisticAnswer(null);
+  }, [game?.currentQuestionIndex, game?.status]);
+
   const isHost = role === "host";
   const quiz = getQuizById(game.quizId) || QUIZZES[0];
   const questions = getQuestionsForQuiz(game.quizId);
@@ -122,11 +129,18 @@ function LiveGamePlayContent() {
 
   const isLastQuestion = game.currentQuestionIndex >= questions.length - 1;
   const currentPlayer = game.players.find((p) => p.id === playerId);
-  const selectedAnswerIndex = currentPlayer?.selectedAnswerIndex;
+  const serverAnswer = currentPlayer?.selectedAnswerIndex;
+  const selectedAnswerIndex =
+    typeof serverAnswer === "number" && serverAnswer >= 0
+      ? serverAnswer
+      : optimisticAnswer !== null
+      ? optimisticAnswer
+      : serverAnswer;
 
   // Handlers
   const handleSelectAnswer = (index: number) => {
-    if (isHost || selectedAnswerIndex !== undefined || !currentQuestion) return;
+    if (isHost || typeof selectedAnswerIndex === "number" || !currentQuestion || game.timeRemaining <= 0) return;
+    setOptimisticAnswer(index);
     submitLiveAnswer(
       pin,
       playerId,
@@ -235,7 +249,7 @@ function LiveGamePlayContent() {
                       HOST CONTROL BAR: Answers Submitted (
                       {
                         game.players.filter(
-                          (p) => !p.isHost && p.selectedAnswerIndex !== undefined
+                          (p) => !p.isHost && typeof p.selectedAnswerIndex === "number" && p.selectedAnswerIndex >= 0
                         ).length
                       }{" "}
                       / {game.players.filter((p) => !p.isHost).length})
@@ -287,6 +301,9 @@ function LiveGamePlayContent() {
                 players={game.players}
                 currentPlayerId={playerId}
                 isHost={isHost}
+                gameId={game.gameId}
+                quizId={game.quizId}
+                totalQuestions={questions.length}
                 onPlayAgain={() => router.push(isHost ? "/live/host" : "/live/join")}
               />
             )}

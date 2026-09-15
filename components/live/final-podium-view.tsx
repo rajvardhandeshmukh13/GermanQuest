@@ -3,15 +3,20 @@
 import * as React from "react";
 import Link from "next/link";
 import { motion } from "motion/react";
-import { Trophy, Medal, Sparkles, Flame, Zap, RotateCcw, Home } from "lucide-react";
+import { Trophy, Medal, Sparkles, Flame, Zap, RotateCcw, Home, LayoutDashboard } from "lucide-react";
 import { GQButton } from "@/components/germanquest";
 import { fadeInUp, staggerContainer, staggerItem } from "@/lib/motion";
 import type { LivePlayer } from "@/lib/live-game";
+import { useAuth } from "@/components/auth/auth-provider";
+import { getQuizById, QUIZZES } from "@/lib/quiz-data";
 
 interface FinalPodiumViewProps {
   players: LivePlayer[];
   currentPlayerId?: string;
   isHost?: boolean;
+  gameId?: string;
+  quizId?: string;
+  totalQuestions?: number;
   onPlayAgain?: () => void;
 }
 
@@ -19,8 +24,14 @@ export function FinalPodiumView({
   players,
   currentPlayerId,
   isHost = false,
+  gameId,
+  quizId,
+  totalQuestions = 8,
   onPlayAgain,
 }: FinalPodiumViewProps) {
+  const { user, repository, isAuthenticated } = useAuth();
+  const hasSavedAttemptRef = React.useRef(false);
+
   const rankedPlayers = [...players]
     .filter((p) => !p.isHost)
     .sort((a, b) => b.score - a.score);
@@ -30,6 +41,39 @@ export function FinalPodiumView({
   const bronze = rankedPlayers[2];
 
   const currentPlayer = rankedPlayers.find((p) => p.id === currentPlayerId);
+
+  const total = totalQuestions || 8;
+  const estimatedCorrect = currentPlayer
+    ? Math.min(total, Math.max(0, Math.round((currentPlayer.score || 0) / 120)))
+    : 0;
+  const accuracy = total > 0 ? Math.min(100, Math.round((estimatedCorrect / total) * 100)) : 0;
+
+  // Persist live quiz result idempotently to user profile
+  React.useEffect(() => {
+    if (isHost || !currentPlayer || hasSavedAttemptRef.current || !gameId) {
+      return;
+    }
+    hasSavedAttemptRef.current = true;
+
+    const quiz = getQuizById(quizId || "hallo") || QUIZZES[0];
+    const attemptId = `live_${gameId}_${currentPlayer.id}`;
+
+    repository.saveQuizAttempt({
+      id: attemptId,
+      quizId: quiz.id,
+      quizTitle: quiz.title,
+      quizSubtitle: quiz.subtitle,
+      topic: quiz.topics?.[0] || "Live Challenge",
+      score: currentPlayer.score || 0,
+      xpEarned: currentPlayer.score || 0,
+      correctAnswers: estimatedCorrect,
+      totalQuestions: total,
+      accuracy,
+      bestStreak: currentPlayer.bestStreak || 0,
+      completedAt: "Live Challenge",
+      timestamp: Date.now(),
+    });
+  }, [isHost, currentPlayer, repository, gameId, quizId, total, estimatedCorrect, accuracy]);
 
   return (
     <motion.div
@@ -137,45 +181,84 @@ export function FinalPodiumView({
       {!isHost && currentPlayer && (
         <motion.div
           variants={fadeInUp}
-          className="rounded-3xl p-6 bg-card border-2 border-primary/30 shadow-[var(--gq-shadow-md)] flex flex-wrap items-center justify-around gap-4"
+          className="rounded-3xl p-6 sm:p-8 bg-card border-2 border-primary/30 shadow-[var(--gq-shadow-md)] space-y-4"
         >
-          <div>
-            <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-              YOUR FINAL RANK
-            </span>
-            <p className="font-display text-3xl font-black text-primary">
-              #{currentPlayer.rank}
-            </p>
+          <div className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-primary/10 border border-primary/20 text-xs font-black uppercase tracking-widest text-primary">
+            <span>YOUR FINAL RESULT</span>
           </div>
 
-          <div className="h-10 w-px bg-border/50 hidden sm:block" />
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 sm:gap-4 pt-2">
+            <div className="bg-background/80 p-3.5 rounded-2xl border border-border/40 flex flex-col items-center justify-center">
+              <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                RANK
+              </span>
+              <p className="font-display text-2xl sm:text-3xl font-black text-primary">
+                #{currentPlayer.rank}
+              </p>
+            </div>
 
-          <div>
-            <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-              TOTAL XP EARNED
-            </span>
-            <p className="font-display text-3xl font-black text-amber-700 flex items-center justify-center gap-1">
-              <Zap size={22} className="fill-amber-500 text-amber-500" />
-              +{currentPlayer.score}
-            </p>
+            <div className="bg-background/80 p-3.5 rounded-2xl border border-border/40 flex flex-col items-center justify-center">
+              <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                TOTAL XP
+              </span>
+              <p className="font-display text-2xl sm:text-3xl font-black text-amber-700 flex items-center gap-0.5">
+                <Zap size={20} className="fill-amber-500 text-amber-500 shrink-0" />
+                +{currentPlayer.score}
+              </p>
+            </div>
+
+            <div className="bg-background/80 p-3.5 rounded-2xl border border-border/40 flex flex-col items-center justify-center">
+              <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                BEST STREAK
+              </span>
+              <p className="font-display text-2xl sm:text-3xl font-black text-amber-600 flex items-center gap-0.5">
+                <Flame size={20} className="fill-amber-500 text-amber-500 shrink-0" />
+                {currentPlayer.bestStreak}
+              </p>
+            </div>
+
+            <div className="bg-background/80 p-3.5 rounded-2xl border border-border/40 flex flex-col items-center justify-center">
+              <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                ACCURACY
+              </span>
+              <p className="font-display text-2xl sm:text-3xl font-black text-emerald-700">
+                {accuracy}%
+              </p>
+            </div>
+
+            <div className="bg-background/80 p-3.5 rounded-2xl border border-border/40 col-span-2 sm:col-span-1 flex flex-col items-center justify-center">
+              <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
+                ANSWERED
+              </span>
+              <p className="font-display text-2xl sm:text-3xl font-black text-foreground">
+                {estimatedCorrect} / {total}
+              </p>
+            </div>
           </div>
 
-          <div className="h-10 w-px bg-border/50 hidden sm:block" />
-
-          <div>
-            <span className="text-[10px] font-black uppercase tracking-widest text-muted-foreground">
-              BEST STREAK
-            </span>
-            <p className="font-display text-3xl font-black text-amber-600 flex items-center justify-center gap-1">
-              <Flame size={22} className="fill-amber-500 text-amber-500" />
-              {currentPlayer.bestStreak}
+          {!isAuthenticated && (
+            <p className="text-xs font-semibold text-muted-foreground pt-1">
+              Sign in to save your live challenge progress to your learning dashboard!
             </p>
-          </div>
+          )}
         </motion.div>
       )}
 
       {/* Action Buttons */}
       <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
+        {!isHost && (
+          <Link href="/profile">
+            <GQButton
+              variant="gold"
+              size="lg"
+              icon={<LayoutDashboard size={18} />}
+              className="px-6 font-bold shadow-md"
+            >
+              VIEW DASHBOARD
+            </GQButton>
+          </Link>
+        )}
+
         {onPlayAgain && (
           <GQButton
             variant="teal"

@@ -190,8 +190,12 @@ export async function joinFirebaseLiveGame(
     await set(ref(database, `games/${gameId}/players/${playerId}`), player);
   }
 
-  // Construct normalized game
-  const playersList = calculateRanks(existingPlayersRecord);
+  // Construct normalized game with updated players record
+  const updatedPlayersRecord = {
+    ...existingPlayersRecord,
+    [player.id]: player,
+  };
+  const playersList = calculateRanks(updatedPlayersRecord);
   const normalizedGame: LiveGame = {
     ...rawGame,
     players: playersList,
@@ -244,7 +248,7 @@ export async function submitFirebaseLiveAnswer(
   if (!snap.exists()) return false;
 
   const player: LivePlayer = snap.val();
-  if (player.selectedAnswerIndex !== undefined) return true; // Already submitted
+  if (typeof player.selectedAnswerIndex === "number") return true; // Already submitted or timed out
 
   const isCorrect = answerIndex === correctAnswerIndex;
   const answerTime = 15 - Math.max(0, timeRemainingSeconds);

@@ -133,9 +133,12 @@ export function saveQuizAttempt(
     try {
       const key = storageKeySuffix ? `gq_quiz_attempts_${storageKeySuffix}` : STORAGE_KEY;
       const currentHistory = getQuizHistory(true, storageKeySuffix);
-      const updatedHistory = [newAttempt, ...currentHistory];
-      localStorage.setItem(key, JSON.stringify(updatedHistory));
-      window.dispatchEvent(new CustomEvent("gq_stats_updated"));
+      const exists = currentHistory.some((a) => a.id === id);
+      if (!exists) {
+        const updatedHistory = [newAttempt, ...currentHistory];
+        localStorage.setItem(key, JSON.stringify(updatedHistory));
+        window.dispatchEvent(new CustomEvent("gq_stats_updated"));
+      }
     } catch (error) {
       console.error("Failed to save quiz attempt to localStorage:", error);
     }

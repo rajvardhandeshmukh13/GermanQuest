@@ -49,7 +49,8 @@ export function LiveAnswerGrid({
   showCorrect = false,
   correctIndex,
 }: LiveAnswerGridProps) {
-  const isLocked = selectedIndex !== undefined;
+  const isLocked = typeof selectedIndex === "number" && selectedIndex >= 0;
+  const isOptionDisabled = disabled || isLocked || showCorrect;
 
   return (
     <div className="space-y-4 w-full">
@@ -71,9 +72,9 @@ export function LiveAnswerGrid({
             <motion.button
               key={idx}
               type="button"
-              whileHover={disabled || isLocked ? {} : { scale: 1.015, y: -2 }}
-              whileTap={disabled || isLocked ? {} : { scale: 0.98 }}
-              disabled={disabled || isLocked}
+              whileHover={isOptionDisabled ? {} : { scale: 1.015, y: -2 }}
+              whileTap={isOptionDisabled ? {} : { scale: 0.98 }}
+              disabled={isOptionDisabled}
               onClick={() => onSelectOption && onSelectOption(idx)}
               className={cn(
                 "relative rounded-2xl p-5 border-2 text-left flex items-center justify-between transition-all min-h-[72px] sm:min-h-[84px] cursor-pointer disabled:cursor-not-allowed",
