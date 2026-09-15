@@ -1,0 +1,63 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        "profile": {
+          ".read": "auth != null",
+          ".write": "auth != null && auth.uid === $uid",
+          ".validate": "newData.hasChildren(['name'])"
+        },
+        "quizHistory": {
+          ".read": "auth != null && auth.uid === $uid",
+          "$attemptId": {
+            ".write": "auth != null && auth.uid === $uid"
+          }
+        },
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null && auth.uid === $uid"
+      }
+    },
+    "gamesByPin": {
+      ".read": true,
+      "$pin": {
+        ".write": true,
+        ".validate": "newData.hasChildren(['gameId', 'status'])"
+      }
+    },
+    "games": {
+      "$gameId": {
+        ".read": true,
+        ".write": "!data.exists() || data.child('hostId').exists()",
+        "status": {
+          ".write": true
+        },
+        "currentQuestionIndex": {
+          ".write": true
+        },
+        "timeRemaining": {
+          ".write": true
+        },
+        "questionStartedAt": {
+          ".write": true
+        },
+        "questionEndsAt": {
+          ".write": true
+        },
+        "players": {
+          ".read": true,
+          "$playerId": {
+            ".write": true
+          }
+        },
+        "answers": {
+          ".read": true,
+          "$questionIndex": {
+            "$playerId": {
+              ".write": true
+            }
+          }
+        }
+      }
+    }
+  }
+}

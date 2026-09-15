@@ -1,26 +1,513 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+@custom-variant dark (&:is(.dark *));
 
+/* ==========================================================
+   GERMANQUEST DESIGN SYSTEM
+   Eine Reise. Ein Spiel. Deutsch lernen.
+   ========================================================== */
+
+/* ----------------------------------------------------------
+   THEME — Tailwind v4 inline theme tokens
+   ---------------------------------------------------------- */
 @theme inline {
+  /* Core surface colors */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+
+  /* Fonts */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --font-display: var(--font-space-grotesk), var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-heading: var(--font-space-grotesk), var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+
+  /* Shadcn color mappings */
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+
+  /* GermanQuest semantic colors */
+  --color-gq-success: var(--gq-success);
+  --color-gq-success-foreground: var(--gq-success-foreground);
+  --color-gq-xp: var(--gq-xp);
+  --color-gq-xp-foreground: var(--gq-xp-foreground);
+  --color-gq-streak: var(--gq-streak);
+  --color-gq-streak-foreground: var(--gq-streak-foreground);
+
+  /* German visual theme accents */
+  --color-gq-red: #B42318;
+  --color-gq-gold: #F5B82E;
+  --color-gq-navy: #10233F;
+  --color-gq-teal: #08AEB5;
+
+  /* GermanQuest navy scale */
+  --color-navy-50: var(--gq-navy-50);
+  --color-navy-100: var(--gq-navy-100);
+  --color-navy-200: var(--gq-navy-200);
+  --color-navy-300: var(--gq-navy-300);
+  --color-navy-400: var(--gq-navy-400);
+  --color-navy-500: var(--gq-navy-500);
+  --color-navy-600: var(--gq-navy-600);
+  --color-navy-700: var(--gq-navy-700);
+  --color-navy-800: var(--gq-navy-800);
+  --color-navy-900: var(--gq-navy-900);
+  --color-navy-950: var(--gq-navy-950);
+
+  /* GermanQuest teal scale */
+  --color-teal-50: var(--gq-teal-50);
+  --color-teal-100: var(--gq-teal-100);
+  --color-teal-200: var(--gq-teal-200);
+  --color-teal-300: var(--gq-teal-300);
+  --color-teal-400: var(--gq-teal-400);
+  --color-teal-500: var(--gq-teal-500);
+  --color-teal-600: var(--gq-teal-600);
+  --color-teal-700: var(--gq-teal-700);
+  --color-teal-800: var(--gq-teal-800);
+  --color-teal-900: var(--gq-teal-900);
+  --color-teal-950: var(--gq-teal-950);
+
+  /* Radius scale */
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+  --radius-3xl: calc(var(--radius) * 2.2);
+  --radius-4xl: calc(var(--radius) * 2.6);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+/* ----------------------------------------------------------
+   ROOT VARIABLES — GermanQuest palette (dark-first design)
+   The primary UI uses deep navy backgrounds with white
+   surface cards. This is NOT a "dark mode" — it's the
+   default theme.
+   ---------------------------------------------------------- */
+:root {
+  /* === Core surfaces === */
+  --background: oklch(0.97 0.01 85);
+  --foreground: oklch(0.20 0.05 250);
+
+  /* === Card / elevated surfaces === */
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.20 0.05 250);
+
+  /* === Popover === */
+  --popover: oklch(0.99 0.005 85);
+  --popover-foreground: oklch(0.20 0.05 250);
+
+  /* === Primary — Teal interactive === */
+  --primary: oklch(0.65 0.14 195);
+  --primary-foreground: oklch(0.99 0 0);
+
+  /* === Secondary — German yellow === */
+  --secondary: oklch(0.80 0.15 85);
+  --secondary-foreground: oklch(0.20 0.05 250);
+
+  /* === Muted — subdued elements on ivory === */
+  --muted: oklch(0.93 0.01 85);
+  --muted-foreground: oklch(0.45 0.03 250);
+
+  /* === Accent — light teal tint for hover states === */
+  --accent: oklch(0.95 0.02 195);
+  --accent-foreground: oklch(0.30 0.10 195);
+
+  /* === Destructive / Muted Red === */
+  --destructive: oklch(0.55 0.18 25);
+
+  /* === Borders === */
+  --border: oklch(0.20 0.05 250 / 8%);
+  --input: oklch(0.20 0.05 250 / 12%);
+  --ring: oklch(0.65 0.14 195);
+
+  /* === Charts === */
+  --chart-1: oklch(0.65 0.14 195);
+  --chart-2: oklch(0.80 0.15 85);
+  --chart-3: oklch(0.60 0.16 145);
+  --chart-4: oklch(0.70 0.12 280);
+  --chart-5: oklch(0.55 0.18 340);
+
+  /* === Radius === */
+  --radius: 0.75rem;
+
+  /* === Sidebar === */
+  --sidebar: oklch(0.96 0.01 85);
+  --sidebar-foreground: oklch(0.20 0.05 250);
+  --sidebar-primary: oklch(0.65 0.14 195);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.93 0.01 85);
+  --sidebar-accent-foreground: oklch(0.30 0.10 195);
+  --sidebar-border: oklch(0.20 0.05 250 / 8%);
+  --sidebar-ring: oklch(0.65 0.14 195);
+
+  /* ==========================================================
+     GERMANQUEST SEMANTIC TOKENS
+     ========================================================== */
+
+  /* Success — correct answers, completion */
+  --gq-success: oklch(0.60 0.16 145);
+  --gq-success-foreground: oklch(0.99 0 0);
+
+  /* XP — experience points, rewards */
+  --gq-xp: oklch(0.80 0.15 85);
+  --gq-xp-foreground: oklch(0.20 0.05 250);
+
+  /* Streak — consecutive activity */
+  --gq-streak: oklch(0.65 0.18 45);
+  --gq-streak-foreground: oklch(0.99 0 0);
+
+  /* === Navy scale === */
+  --gq-navy-50: oklch(0.96 0.01 250);
+  --gq-navy-100: oklch(0.91 0.015 250);
+  --gq-navy-200: oklch(0.82 0.02 250);
+  --gq-navy-300: oklch(0.68 0.025 250);
+  --gq-navy-400: oklch(0.54 0.03 250);
+  --gq-navy-500: oklch(0.42 0.04 250);
+  --gq-navy-600: oklch(0.32 0.045 250);
+  --gq-navy-700: oklch(0.25 0.05 250);
+  --gq-navy-800: oklch(0.22 0.05 250);
+  --gq-navy-900: oklch(0.20 0.05 250);
+  --gq-navy-950: oklch(0.14 0.04 250);
+
+  /* === Teal scale === */
+  --gq-teal-50: oklch(0.97 0.02 195);
+  --gq-teal-100: oklch(0.92 0.04 195);
+  --gq-teal-200: oklch(0.85 0.07 195);
+  --gq-teal-300: oklch(0.76 0.10 195);
+  --gq-teal-400: oklch(0.68 0.12 195);
+  --gq-teal-500: oklch(0.65 0.14 195);
+  --gq-teal-600: oklch(0.55 0.13 195);
+  --gq-teal-700: oklch(0.46 0.11 195);
+  --gq-teal-800: oklch(0.38 0.09 195);
+  --gq-teal-900: oklch(0.30 0.07 195);
+  --gq-teal-950: oklch(0.22 0.05 195);
+
+  /* ==========================================================
+     SPACING SYSTEM
+     Base: 4px grid. Use multiples for consistent rhythm.
+     ========================================================== */
+  --gq-space-0: 0;
+  --gq-space-px: 1px;
+  --gq-space-0\.5: 0.125rem;
+  --gq-space-1: 0.25rem;
+  --gq-space-1\.5: 0.375rem;
+  --gq-space-2: 0.5rem;
+  --gq-space-3: 0.75rem;
+  --gq-space-4: 1rem;
+  --gq-space-5: 1.25rem;
+  --gq-space-6: 1.5rem;
+  --gq-space-8: 2rem;
+  --gq-space-10: 2.5rem;
+  --gq-space-12: 3rem;
+  --gq-space-16: 4rem;
+  --gq-space-20: 5rem;
+  --gq-space-24: 6rem;
+  --gq-space-32: 8rem;
+
+  /* Section-level spacing */
+  --gq-section-gap: var(--gq-space-16);
+  --gq-section-gap-mobile: var(--gq-space-10);
+  --gq-container-padding: var(--gq-space-6);
+  --gq-container-padding-mobile: var(--gq-space-4);
+
+  /* ==========================================================
+     SHADOW SYSTEM
+     Subtle layered shadows for depth. Soft & natural.
+     ========================================================== */
+  --gq-shadow-xs: 0 1px 2px 0 oklch(0.20 0.05 250 / 4%);
+  --gq-shadow-sm: 0 1px 3px 0 oklch(0.20 0.05 250 / 6%), 0 1px 2px -1px oklch(0.20 0.05 250 / 4%);
+  --gq-shadow-md: 0 4px 12px -2px oklch(0.20 0.05 250 / 6%), 0 2px 4px -2px oklch(0.20 0.05 250 / 4%);
+  --gq-shadow-lg: 0 10px 25px -4px oklch(0.20 0.05 250 / 8%), 0 4px 10px -4px oklch(0.20 0.05 250 / 4%);
+  --gq-shadow-xl: 0 20px 35px -6px oklch(0.20 0.05 250 / 10%), 0 8px 16px -6px oklch(0.20 0.05 250 / 4%);
+
+  /* Colored shadows for interactive elements */
+  --gq-shadow-teal: 0 4px 16px -3px oklch(0.65 0.14 195 / 25%);
+  --gq-shadow-teal-lg: 0 10px 25px -5px oklch(0.65 0.14 195 / 30%), 0 4px 10px -4px oklch(0.65 0.14 195 / 20%);
+  --gq-shadow-gold: 0 4px 14px -3px oklch(0.80 0.15 85 / 25%);
+
+  /* Card shadow — elevated card on light ivory */
+  --gq-shadow-card: 0 2px 10px -2px oklch(0.20 0.05 250 / 5%), 0 1px 3px 0 oklch(0.20 0.05 250 / 3%);
+  --gq-shadow-card-hover: 0 12px 30px -4px oklch(0.20 0.05 250 / 10%), 0 4px 10px -4px oklch(0.20 0.05 250 / 5%);
+
+  /* ==========================================================
+     ANIMATION TOKENS
+     Smooth, purposeful, 150–250ms. Never gratuitous.
+     ========================================================== */
+  --gq-duration-instant: 100ms;
+  --gq-duration-fast: 150ms;
+  --gq-duration-normal: 200ms;
+  --gq-duration-moderate: 300ms;
+  --gq-duration-slow: 500ms;
+
+  --gq-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --gq-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --gq-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --gq-ease-bounce: cubic-bezier(0.68, -0.6, 0.32, 1.6);
+}
+
+/* ----------------------------------------------------------
+   DARK CLASS OVERRIDE
+   Since the default UI is already dark-navy, the .dark class
+   tweaks contrast for explicit dark mode toggling if needed.
+   ---------------------------------------------------------- */
+.dark {
+  --background: oklch(0.12 0.025 262);
+  --foreground: oklch(0.98 0 0);
+  --card: oklch(0.18 0.025 262);
+  --card-foreground: oklch(0.97 0.005 260);
+  --popover: oklch(0.18 0.025 262);
+  --popover-foreground: oklch(0.97 0.005 260);
+  --primary: oklch(0.70 0.14 195);
+  --primary-foreground: oklch(0.12 0.02 262);
+  --secondary: oklch(0.82 0.14 85);
+  --secondary-foreground: oklch(0.15 0.03 85);
+  --muted: oklch(0.20 0.02 262);
+  --muted-foreground: oklch(0.60 0.02 260);
+  --accent: oklch(0.22 0.035 195);
+  --accent-foreground: oklch(0.85 0.04 195);
+  --destructive: oklch(0.65 0.20 25);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 12%);
+  --ring: oklch(0.70 0.14 195);
+  --chart-1: oklch(0.70 0.14 195);
+  --chart-2: oklch(0.82 0.14 85);
+  --chart-3: oklch(0.55 0.16 145);
+  --chart-4: oklch(0.65 0.12 280);
+  --chart-5: oklch(0.50 0.18 340);
+  --sidebar: oklch(0.10 0.02 262);
+  --sidebar-foreground: oklch(0.98 0 0);
+  --sidebar-primary: oklch(0.70 0.14 195);
+  --sidebar-primary-foreground: oklch(0.99 0 0);
+  --sidebar-accent: oklch(0.18 0.025 262);
+  --sidebar-accent-foreground: oklch(0.85 0.04 195);
+  --sidebar-border: oklch(1 0 0 / 8%);
+  --sidebar-ring: oklch(0.70 0.14 195);
+}
+
+/* ==========================================================
+   BASE LAYER
+   ========================================================== */
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    @apply font-sans scroll-smooth;
+  }
+
+  /* --- Anchor scroll offset for fixed navbar (80px = 5rem) --- */
+  /* All sections that are anchor targets need this so they aren't
+     hidden behind the sticky navbar when navigating via hash links. */
+  [id] {
+    scroll-margin-top: 5rem;
+  }
+
+  /* --- Focus states for accessibility --- */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  /* --- Reduced motion support --- */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+
+  /* --- Selection color --- */
+  ::selection {
+    background: oklch(0.65 0.14 195 / 30%);
+    color: oklch(0.99 0 0);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* ==========================================================
+   TYPOGRAPHY UTILITY CLASSES
+   Use font-display for headings, font-sans for body.
+   ========================================================== */
+@layer utilities {
+  .text-display {
+    font-family: var(--font-display);
+    font-size: clamp(2rem, 4vw, 3rem);
+    font-weight: 700;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+  }
+
+  .text-page-heading {
+    font-family: var(--font-display);
+    font-size: clamp(1.75rem, 3.5vw, 2.25rem);
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.015em;
+  }
+
+  .text-section-heading {
+    font-family: var(--font-display);
+    font-size: clamp(1.25rem, 2.5vw, 1.5rem);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+  }
+
+  .text-h3 {
+    font-family: var(--font-display);
+    font-size: clamp(1.125rem, 2vw, 1.25rem);
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: -0.005em;
+  }
+
+  .text-card-heading {
+    font-family: var(--font-display);
+    font-size: 1.125rem;
+    font-weight: 600;
+    line-height: 1.4;
+    letter-spacing: -0.005em;
+  }
+
+  .text-body {
+    font-family: var(--font-sans);
+    font-size: 1rem;
+    font-weight: 400;
+    line-height: 1.6;
+  }
+
+  .text-small {
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    font-weight: 400;
+    line-height: 1.5;
+  }
+
+  .text-button {
+    font-family: var(--font-sans);
+    font-size: 0.875rem;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.01em;
+  }
+
+  .text-metadata {
+    font-family: var(--font-sans);
+    font-size: 0.75rem;
+    font-weight: 500;
+    line-height: 1.4;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+  }
+
+  /* --- Container utilities --- */
+  .gq-container {
+    width: 100%;
+    max-width: 1280px;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 1.5rem; /* 24px mobile */
+    padding-right: 1.5rem;
+  }
+
+  @media (min-width: 768px) {
+    .gq-container {
+      padding-left: 2rem; /* 32px tablet */
+      padding-right: 2rem;
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .gq-container {
+      padding-left: 2.5rem; /* 40px desktop */
+      padding-right: 2.5rem;
+    }
+  }
+
+  /* --- Section spacing --- */
+  .gq-section {
+    padding-top: var(--gq-section-gap-mobile);
+    padding-bottom: var(--gq-section-gap-mobile);
+  }
+
+  @media (min-width: 768px) {
+    .gq-section {
+      padding-top: var(--gq-section-gap);
+      padding-bottom: var(--gq-section-gap);
+    }
+  }
+
+  /* --- Glassmorphism backdrop --- */
+  .gq-glass {
+    background: oklch(0.97 0.01 85 / 85%);
+    backdrop-filter: blur(12px) saturate(180%);
+    -webkit-backdrop-filter: blur(12px) saturate(180%);
+  }
+
+  /* --- Card interaction states --- */
+  .gq-card-interactive {
+    transition:
+      box-shadow var(--gq-duration-normal) var(--gq-ease-out),
+      transform var(--gq-duration-normal) var(--gq-ease-out);
+    box-shadow: var(--gq-shadow-card);
+  }
+
+  .gq-card-interactive:hover {
+    box-shadow: var(--gq-shadow-card-hover);
+    transform: translateY(-4px);
+  }
+
+  /* --- Premium card surface --- */
+  .gq-card-surface {
+    background: var(--card);
+    color: var(--card-foreground);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--gq-shadow-card);
+    border: 1px solid oklch(0.20 0.05 250 / 8%);
+  }
+
+  /* --- Teal glow for primary CTAs --- */
+  .gq-glow-teal {
+    box-shadow: var(--gq-shadow-teal);
+    transition: box-shadow var(--gq-duration-normal) var(--gq-ease-out);
+  }
+
+  .gq-glow-teal:hover {
+    box-shadow: var(--gq-shadow-teal-lg);
+  }
 }
