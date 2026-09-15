@@ -380,42 +380,25 @@ export async function advanceLiveGameState(
   return game;
 }
 
-export async function terminateLiveGame(pin: string): Promise<LiveGame | null> {
+export async function terminateLiveGame(pin: string): Promise<boolean> {
   try {
-    await terminateFirebaseLiveGame(pin);
+    return await terminateFirebaseLiveGame(pin);
   } catch (err) {
-    console.warn("terminateFirebaseLiveGame warning:", err);
+    console.error("terminateFirebaseLiveGame error:", err);
+    return false;
   }
-
-  const game = getLiveGameByPin(pin);
-  if (!game) return null;
-
-  game.status = "terminated";
-  recalculateRanks(game);
-  broadcastLocalUpdate(pin, game);
-  return game;
 }
 
 export async function submitPlayerQuizEarly(
   pin: string,
   playerId: string
-): Promise<LiveGame | null> {
+): Promise<boolean> {
   try {
-    await submitPlayerQuizEarlyInFirebase(pin, playerId);
+    return await submitPlayerQuizEarlyInFirebase(pin, playerId);
   } catch (err) {
-    console.warn("submitPlayerQuizEarlyInFirebase warning:", err);
+    console.error("submitPlayerQuizEarlyInFirebase error:", err);
+    return false;
   }
-
-  const game = getLiveGameByPin(pin);
-  if (!game) return null;
-
-  const player = game.players.find((p) => p.id === playerId);
-  if (player) {
-    player.hasSubmitted = true;
-  }
-
-  broadcastLocalUpdate(pin, game);
-  return game;
 }
 
 export function subscribeToLiveGame(

@@ -22,7 +22,7 @@ import { LiveAnswerGrid } from "@/components/live/live-answer-grid";
 import { LiveQuestionResults } from "@/components/live/live-question-results";
 import { LiveLeaderboardView } from "@/components/live/live-leaderboard-view";
 import { FinalPodiumView } from "@/components/live/final-podium-view";
-import { Play, Square, LogOut, AlertTriangle } from "lucide-react";
+import { Play, Square, LogOut, AlertTriangle, Loader2 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { fadeInUp } from "@/lib/motion";
 
@@ -42,6 +42,10 @@ function LiveGamePlayContent() {
   const [optimisticAnswer, setOptimisticAnswer] = React.useState<number | null>(null);
   const [showTerminateConfirm, setShowTerminateConfirm] = React.useState(false);
   const [showSubmitEarlyConfirm, setShowSubmitEarlyConfirm] = React.useState(false);
+  const [isTerminating, setIsTerminating] = React.useState(false);
+  const [terminateError, setTerminateError] = React.useState<string | null>(null);
+
+  const transitionInProgressRef = React.useRef(false);
 
   // Subscribe to real-time updates after hydration mount
   React.useEffect(() => {
@@ -65,31 +69,84 @@ function LiveGamePlayContent() {
     return () => unsubscribe();
   }, [pin]);
 
-  // Clear optimistic answer state when moving to a new question or changing status
+  // Clear transition lock and optimistic answer state when moving to a new question or changing status
   React.useEffect(() => {
     setOptimisticAnswer(null);
+    transitionInProgressRef.current = false;
   }, [game?.currentQuestionIndex, game?.status]);
 
-  // Host auto-advance effect when question timer expires or all active players answered
+  // Host-driven Automatic State Machine:
+  // 1. QUESTION: Auto-finalize when all active (non-submitted) players have answered
   React.useEffect(() => {
     if (!game || role !== "host" || game.status !== "question") return;
 
-    const questions = getQuestionsForQuiz(game.quizId);
-    const currentQuestion = questions[game.currentQuestionIndex % questions.length];
-    if (!currentQuestion) return;
-
-    const correctAnswerIndex = Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer));
-
     const activePlayers = game.players.filter((p) => !p.isHost && !p.hasSubmitted);
     const allActiveAnswered =
-      activePlayers.length === 0 ||
+      activePlayers.length > 0 &&
       activePlayers.every((p) => typeof p.selectedAnswerIndex === "number" && p.selectedAnswerIndex >= 0);
 
     if (allActiveAnswered) {
+      if (transitionInProgressRef.current) return;
+      transitionInProgressRef.current = true;
+
+      const questions = getQuestionsForQuiz(game.quizId);
+      const currentQuestion = questions[game.currentQuestionIndex % questions.length];
+      const correctAnswerIndex = currentQuestion
+        ? Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer))
+        : 0;
+
       simulateDemoAnswers(pin, correctAnswerIndex);
-      advanceLiveGameState(pin, "results");
     }
   }, [game, pin, role]);
+
+  // 2. RESULTS -> LEADERBOARD: Auto-advance after 2.5 seconds delay
+  React.useEffect(() => {
+    if (!game || role !== "host" || game.status !== "results") return;
+
+    const timer = setTimeout(async () => {
+      if (transitionInProgressRef.current) return;
+      transitionInProgressRef.current = true;
+      await advanceLiveGameState(pin, "leaderboard");
+    }, 2500);
+
+    return () => clearTimeout(timer);
+  }, [game?.status, game?.currentQuestionIndex, pin, role]);
+
+  // 3. LEADERBOARD -> QUESTION / FINISHED: Auto-advance after 2.5 seconds delay
+  React.useEffect(() => {
+    if (!game || role !== "host" || game.status !== "leaderboard") return;
+
+    const questions = getQuestionsForQuiz(game.quizId);
+    const isLastQuestion = game.currentQuestionIndex >= questions.length - 1;
+
+    const timer = setTimeout(async () => {
+      if (transitionInProgressRef.current) return;
+      transitionInProgressRef.current = true;
+
+      if (isLastQuestion) {
+        await advanceLiveGameState(pin, "finished");
+      } else {
+        await advanceLiveGameState(pin, "question");
+      }
+    }, 2500);
+
+    return () => clearTimeout(timer);
+  }, [game?.status, game?.currentQuestionIndex, game?.quizId, pin, role]);
+
+  const handleTimeUp = React.useCallback(async () => {
+    if (role === "host" && game?.status === "question") {
+      if (transitionInProgressRef.current) return;
+      transitionInProgressRef.current = true;
+
+      const questions = getQuestionsForQuiz(game.quizId);
+      const currentQuestion = questions[game.currentQuestionIndex % questions.length];
+      const correctAnswerIndex = currentQuestion
+        ? Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer))
+        : 0;
+
+      await simulateDemoAnswers(pin, correctAnswerIndex);
+    }
+  }, [role, game?.status, game?.quizId, game?.currentQuestionIndex, pin]);
 
   const navBarElement = (
     <NavBar
@@ -186,33 +243,30 @@ function LiveGamePlayContent() {
     );
   };
 
-  const handleTimeUp = () => {
-    if (isHost && game.status === "question" && currentQuestion) {
-      simulateDemoAnswers(pin, correctAnswerIndex);
-      advanceLiveGameState(pin, "results");
+  const handleHostEndQuestion = async () => {
+    if (isHost && currentQuestion && game.status === "question") {
+      if (transitionInProgressRef.current) return;
+      transitionInProgressRef.current = true;
+
+      await simulateDemoAnswers(pin, correctAnswerIndex);
     }
   };
 
-  const handleHostEndQuestion = () => {
-    if (isHost && currentQuestion) {
-      simulateDemoAnswers(pin, correctAnswerIndex);
-      advanceLiveGameState(pin, "results");
-    }
-  };
-
-  const handleHostResultNext = () => {
-    if (isHost) {
-      if (isLastQuestion) {
-        advanceLiveGameState(pin, "leaderboard");
+  const handleHostTerminateQuiz = async () => {
+    setIsTerminating(true);
+    setTerminateError(null);
+    try {
+      const success = await terminateLiveGame(pin);
+      if (!success) {
+        setTerminateError("Failed to terminate game in Firebase. Please check network connection.");
       } else {
-        advanceLiveGameState(pin, "question");
+        setShowTerminateConfirm(false);
       }
-    }
-  };
-
-  const handleHostNextQuestion = () => {
-    if (isHost) {
-      advanceLiveGameState(pin, "finished");
+    } catch (err) {
+      console.error("Terminate Quiz error:", err);
+      setTerminateError("An error occurred while terminating the quiz.");
+    } finally {
+      setIsTerminating(false);
     }
   };
 
@@ -393,7 +447,6 @@ function LiveGamePlayContent() {
                     currentPlayerId={playerId}
                     isHost={isHost}
                     isLastQuestion={isLastQuestion}
-                    onNext={handleHostResultNext}
                   />
 
                   {isHost && (
@@ -422,7 +475,6 @@ function LiveGamePlayContent() {
                     currentPlayerId={playerId}
                     isHost={isHost}
                     isLastQuestion={isLastQuestion}
-                    onNext={handleHostNextQuestion}
                   />
 
                   {isHost && (
@@ -458,24 +510,33 @@ function LiveGamePlayContent() {
                   This will end the live quiz for all players immediately and show the final leaderboard.
                 </p>
 
+                {terminateError && (
+                  <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-rose-900 text-xs font-bold">
+                    {terminateError}
+                  </div>
+                )}
+
                 <div className="flex items-center justify-center gap-3 pt-2">
                   <GQButton
                     variant="outline"
                     size="sm"
-                    onClick={() => setShowTerminateConfirm(false)}
+                    disabled={isTerminating}
+                    onClick={() => {
+                      setTerminateError(null);
+                      setShowTerminateConfirm(false);
+                    }}
                   >
                     Cancel
                   </GQButton>
                   <GQButton
                     variant="gold"
                     size="sm"
+                    disabled={isTerminating}
                     className="bg-rose-600 hover:bg-rose-700 border-rose-700 text-white font-bold"
-                    onClick={async () => {
-                      setShowTerminateConfirm(false);
-                      await terminateLiveGame(pin);
-                    }}
+                    onClick={handleHostTerminateQuiz}
+                    icon={isTerminating ? <Loader2 size={14} className="animate-spin" /> : undefined}
                   >
-                    Terminate Quiz
+                    {isTerminating ? "Terminating..." : "Terminate Quiz"}
                   </GQButton>
                 </div>
               </div>

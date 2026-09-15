@@ -17,6 +17,7 @@ export function LiveTimer({
 }: LiveTimerProps) {
   const [timeLeft, setTimeLeft] = React.useState(initialSeconds);
   const onTimeUpRef = React.useRef(onTimeUp);
+  const hasTriggeredRef = React.useRef(false);
 
   React.useEffect(() => {
     onTimeUpRef.current = onTimeUp;
@@ -24,25 +25,25 @@ export function LiveTimer({
 
   React.useEffect(() => {
     setTimeLeft(initialSeconds);
+    hasTriggeredRef.current = false;
   }, [initialSeconds]);
 
   React.useEffect(() => {
-    if (isPaused || timeLeft <= 0) return;
-
-    const interval = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(interval);
-          if (onTimeUpRef.current) {
-            onTimeUpRef.current();
-          }
-          return 0;
+    if (isPaused || timeLeft <= 0) {
+      if (timeLeft <= 0 && !hasTriggeredRef.current) {
+        hasTriggeredRef.current = true;
+        if (onTimeUpRef.current) {
+          onTimeUpRef.current();
         }
-        return prev - 1;
-      });
+      }
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      setTimeLeft((prev) => Math.max(0, prev - 1));
     }, 1000);
 
-    return () => clearInterval(interval);
+    return () => clearTimeout(timer);
   }, [isPaused, timeLeft]);
 
   const isUrgent = timeLeft <= 5;
