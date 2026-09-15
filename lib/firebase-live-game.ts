@@ -4,9 +4,7 @@ import {
   get,
   update,
   onValue,
-  off,
   child,
-  serverTimestamp,
 } from "firebase/database";
 import { database } from "./firebase";
 import { getQuizById, QUIZZES } from "./quiz-data";
@@ -217,7 +215,7 @@ export async function startFirebaseLiveGame(
   const now = Date.now();
   const endsAt = now + durationSeconds * 1000;
 
-  const updates: Record<string, any> = {
+  const updates: Record<string, unknown> = {
     [`games/${gameId}/status`]: "question",
     [`games/${gameId}/currentQuestionIndex`]: 0,
     [`games/${gameId}/timeRemaining`]: durationSeconds,
@@ -232,6 +230,8 @@ export async function startFirebaseLiveGame(
 
 /**
  * 5. Player Submits Answer
+ * After writing answer to Firebase, check if all active players have answered
+ * and auto-advance the question if so.
  */
 export async function submitFirebaseLiveAnswer(
   pin: string,
@@ -248,7 +248,7 @@ export async function submitFirebaseLiveAnswer(
   if (!snap.exists()) return false;
 
   const player: LivePlayer = snap.val();
-  if (typeof player.selectedAnswerIndex === "number") return true; // Already submitted or timed out
+  if (typeof player.selectedAnswerIndex === "number") return true; // Already submitted
 
   const isCorrect = answerIndex === correctAnswerIndex;
   const answerTime = 15 - Math.max(0, timeRemainingSeconds);
@@ -273,7 +273,7 @@ export async function submitFirebaseLiveAnswer(
     updatedStreak = 0;
   }
 
-  const updates: Record<string, any> = {
+  const updates: Record<string, unknown> = {
     [`games/${gameId}/players/${playerId}/selectedAnswerIndex`]: answerIndex,
     [`games/${gameId}/players/${playerId}/answerTimeSeconds`]: answerTime,
     [`games/${gameId}/players/${playerId}/isCorrect`]: isCorrect,
@@ -296,11 +296,17 @@ export async function submitFirebaseLiveAnswer(
   };
 
   await update(ref(database), updates);
+
+  // BUG FIX: After writing answer, check if ALL active players have answered.
+  // Re-read fresh game state from Firebase — do NOT use stale local state.
+  await checkAndAutoAdvanceQuestionIfAllAnswered(pin);
+
   return true;
 }
 
 /**
- * 6. Advance Game State (question -> results -> leaderboard -> next question -> finished)
+ * 6. Advance Game State (used internally, or for simple lobby->question transitions).
+ * For question->results transitions, use finishCurrentFirebaseQuestion() instead.
  */
 export async function advanceFirebaseLiveGameState(
   pin: string,
@@ -315,7 +321,7 @@ export async function advanceFirebaseLiveGameState(
 
   const rawGame = gameSnap.val();
   const currentIdx = rawGame.currentQuestionIndex || 0;
-  const updates: Record<string, any> = {
+  const updates: Record<string, unknown> = {
     [`games/${gameId}/status`]: nextStatus,
     [`gamesByPin/${pin}/status`]: nextStatus,
   };
@@ -363,46 +369,44 @@ export async function advanceFirebaseLiveGameState(
 /**
  * Auto-advance helper: checks if all active players have answered the current question.
  * If so, finalizes the question immediately without waiting for the timer.
+ * Always re-reads fresh game state from Firebase.
  */
 export async function checkAndAutoAdvanceQuestionIfAllAnswered(
-  pin: string,
-  rawGame?: any
+  pin: string
 ): Promise<boolean> {
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) return false;
 
-  if (!rawGame) {
-    const snap = await get(ref(database, `games/${gameId}`));
-    if (!snap.exists()) return false;
-    rawGame = snap.val();
-  }
+  const snap = await get(ref(database, `games/${gameId}`));
+  if (!snap.exists()) return false;
+  const rawGame = snap.val();
 
   if (rawGame.status !== "question") return false;
 
   const playersMap = rawGame.players || {};
   const playerList = Object.values(playersMap) as LivePlayer[];
 
-  // Active players are non-host contestants who haven't submitted the entire quiz early
+  // Active players: non-host contestants who haven't submitted the entire quiz early
   const activePlayers = playerList.filter((p) => !p.isHost && !p.hasSubmitted);
 
-  const allAnswered =
-    activePlayers.length === 0 ||
-    activePlayers.every((p) => typeof p.selectedAnswerIndex === "number");
+  if (activePlayers.length === 0) return false;
 
-  if (allAnswered) {
-    const quizId = rawGame.quizId || "hallo";
-    const { getQuestionsForQuiz } = await import("./quiz-questions-data");
-    const questions = getQuestionsForQuiz(quizId);
-    const currentIdx = rawGame.currentQuestionIndex || 0;
-    const currentQuestion = questions[currentIdx % questions.length];
-    const correctAnswerIndex = currentQuestion
-      ? Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer))
-      : 0;
+  const allAnswered = activePlayers.every(
+    (p) => typeof p.selectedAnswerIndex === "number"
+  );
 
-    return await finalizeFirebaseQuestionResults(pin, correctAnswerIndex);
-  }
+  if (!allAnswered) return false;
 
-  return false;
+  const quizId = rawGame.quizId || "hallo";
+  const { getQuestionsForQuiz } = await import("./quiz-questions-data");
+  const questions = getQuestionsForQuiz(quizId);
+  const currentIdx = rawGame.currentQuestionIndex || 0;
+  const currentQuestion = questions[currentIdx % questions.length];
+  const correctAnswerIndex = currentQuestion
+    ? Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer))
+    : 0;
+
+  return await finishCurrentFirebaseQuestion(pin, correctAnswerIndex);
 }
 
 /**
@@ -419,7 +423,7 @@ export async function submitPlayerQuizEarlyInFirebase(
   const snap = await get(playerRef);
   if (!snap.exists()) return false;
 
-  const updates: Record<string, any> = {
+  const updates: Record<string, unknown> = {
     [`games/${gameId}/players/${playerId}/hasSubmitted`]: true,
   };
 
@@ -432,6 +436,8 @@ export async function submitPlayerQuizEarlyInFirebase(
 
 /**
  * Host Terminates Live Quiz
+ * Atomically writes terminated status + final ranks.
+ * Firebase onValue listener drives UI update — no local state mutation needed.
  */
 export async function terminateFirebaseLiveGame(pin: string): Promise<boolean> {
   const gameId = await getFirebaseGameIdByPin(pin);
@@ -444,7 +450,7 @@ export async function terminateFirebaseLiveGame(pin: string): Promise<boolean> {
   const playerList = Object.values(rawGame.players || {}) as LivePlayer[];
   const rankedPlayers = calculateRanks(playerList);
 
-  const updates: Record<string, any> = {
+  const updates: Record<string, unknown> = {
     [`games/${gameId}/status`]: "terminated",
     [`gamesByPin/${pin}/status`]: "terminated",
   };
@@ -459,10 +465,21 @@ export async function terminateFirebaseLiveGame(pin: string): Promise<boolean> {
 }
 
 /**
- * Finalizes question results when time expires, host ends question early, or all active players answered.
- * Preserves real participant answers, simulates only demo bots, and marks unanswered human players as incorrect (0 XP).
+ * Finalizes the current question.
+ * This is the SINGLE authoritative function for transitioning question -> results.
+ *
+ * It:
+ * 1. Re-reads the latest game from Firebase (not stale React state).
+ * 2. Guards with status === "question" (idempotent — only the first caller wins).
+ * 3. Preserves real submitted answers.
+ * 4. Simulates demo bot answers.
+ * 5. Marks unanswered human players as timed out.
+ * 6. Recalculates ranks.
+ * 7. Atomically writes status = "results" + all player updates to Firebase.
+ *
+ * Does NOT touch localStorage. Firebase onValue drives all UI updates.
  */
-export async function finalizeFirebaseQuestionResults(
+export async function finishCurrentFirebaseQuestion(
   pin: string,
   correctAnswerIndex: number
 ): Promise<boolean> {
@@ -473,30 +490,37 @@ export async function finalizeFirebaseQuestionResults(
   if (!gameSnap.exists()) return false;
 
   const rawGame = gameSnap.val();
-  if (rawGame.status !== "question") return false; // Idempotent guard: only finalize if currently in question state
+
+  // IDEMPOTENT GUARD: Only transition if currently in "question" state.
+  // This prevents double-fires from timer + auto-advance + host button.
+  if (rawGame.status !== "question") return false;
 
   const playersMap = rawGame.players || {};
-  const updates: Record<string, any> = {};
+  const updates: Record<string, unknown> = {};
 
-  Object.values(playersMap).forEach((p: any) => {
-    if (p.isHost) return;
+  Object.values(playersMap).forEach((p: unknown) => {
+    const player = p as LivePlayer & { id: string };
+    if (player.isHost) return;
 
-    if (p.selectedAnswerIndex !== undefined && p.selectedAnswerIndex !== null) {
-      // Player already submitted their real answer. Keep their real results!
+    if (
+      player.selectedAnswerIndex !== undefined &&
+      player.selectedAnswerIndex !== null
+    ) {
+      // Real submitted answer — keep exact result, do not overwrite
       return;
     }
 
-    if (typeof p.id === "string" && p.id.startsWith("demo-")) {
-      // DEMO BOT: simulate a bot choice if un-answered
+    if (typeof player.id === "string" && player.id.startsWith("demo-")) {
+      // DEMO BOT: simulate a bot choice if unanswered
       const isCorrect = Math.random() < 0.7;
       const chosen = isCorrect
         ? correctAnswerIndex
         : (correctAnswerIndex + 1) % 4;
       const timeRemaining = Math.floor(Math.random() * 10) + 3;
 
-      let score = p.score || 0;
-      let streak = p.currentStreak || 0;
-      let bestStreak = p.bestStreak || 0;
+      let score = player.score || 0;
+      let streak = player.currentStreak || 0;
+      let bestStreak = player.bestStreak || 0;
       let xp = 0;
 
       if (isCorrect) {
@@ -508,27 +532,23 @@ export async function finalizeFirebaseQuestionResults(
         streak = 0;
       }
 
-      updates[`games/${gameId}/players/${p.id}/selectedAnswerIndex`] = chosen;
-      updates[`games/${gameId}/players/${p.id}/isCorrect`] = isCorrect;
-      updates[`games/${gameId}/players/${p.id}/xpEarnedLastQuestion`] = xp;
-      updates[`games/${gameId}/players/${p.id}/score`] = score;
-      updates[`games/${gameId}/players/${p.id}/currentStreak`] = streak;
-      updates[`games/${gameId}/players/${p.id}/bestStreak`] = bestStreak;
+      updates[`games/${gameId}/players/${player.id}/selectedAnswerIndex`] = chosen;
+      updates[`games/${gameId}/players/${player.id}/isCorrect`] = isCorrect;
+      updates[`games/${gameId}/players/${player.id}/xpEarnedLastQuestion`] = xp;
+      updates[`games/${gameId}/players/${player.id}/score`] = score;
+      updates[`games/${gameId}/players/${player.id}/currentStreak`] = streak;
+      updates[`games/${gameId}/players/${player.id}/bestStreak`] = bestStreak;
     } else {
-      // REAL HUMAN PARTICIPANT who did not submit an answer in time:
-      // Mark unanswered / incorrect (0 XP earned, reset streak, keep score unchanged)
-      updates[`games/${gameId}/players/${p.id}/selectedAnswerIndex`] = -1; // -1 indicates unanswered timeout
-      updates[`games/${gameId}/players/${p.id}/isCorrect`] = false;
-      updates[`games/${gameId}/players/${p.id}/xpEarnedLastQuestion`] = 0;
-      updates[`games/${gameId}/players/${p.id}/currentStreak`] = 0;
+      // Real human participant who did not answer in time:
+      // -1 = timed out / unanswered; streak reset; score unchanged
+      updates[`games/${gameId}/players/${player.id}/selectedAnswerIndex`] = -1;
+      updates[`games/${gameId}/players/${player.id}/isCorrect`] = false;
+      updates[`games/${gameId}/players/${player.id}/xpEarnedLastQuestion`] = 0;
+      updates[`games/${gameId}/players/${player.id}/currentStreak`] = 0;
     }
   });
 
-  // Advance status to results
-  updates[`games/${gameId}/status`] = "results";
-  updates[`gamesByPin/${pin}/status`] = "results";
-
-  // Recalculate ranks across players
+  // Recalculate ranks based on current scores (before committing the update)
   const playerList = Object.values(playersMap) as LivePlayer[];
   const rankedPlayers = calculateRanks(playerList);
   rankedPlayers.forEach((p) => {
@@ -536,62 +556,180 @@ export async function finalizeFirebaseQuestionResults(
     updates[`games/${gameId}/players/${p.id}/previousRank`] = p.previousRank;
   });
 
+  // Atomically set status = "results"
+  updates[`games/${gameId}/status`] = "results";
+  updates[`gamesByPin/${pin}/status`] = "results";
+
   await update(ref(database), updates);
+
+  // Kick off the automatic post-question flow (results -> leaderboard -> next/finished)
+  // Run this without awaiting so it doesn't block the caller.
+  advanceAfterQuestion(pin).catch((err) =>
+    console.error("advanceAfterQuestion error:", err)
+  );
+
   return true;
 }
 
 /**
+ * HOST TRANSITION CONTROLLER
+ *
+ * After a question is finalized (status = "results"), this function drives the
+ * authoritative state machine:
+ *
+ *   results  --[2s]--> leaderboard --[2s]--> question(+1) OR finished
+ *
+ * This is the SINGLE source of automatic transitions. React effects in the UI
+ * must NOT independently advance these states.
+ *
+ * Does NOT touch localStorage. Firebase onValue drives all UI updates.
+ */
+export async function advanceAfterQuestion(pin: string): Promise<void> {
+  const gameId = await getFirebaseGameIdByPin(pin);
+  if (!gameId) return;
+
+  // Step 1: Wait 2 seconds on "results"
+  await sleep(2000);
+
+  // Step 2: Re-read Firebase — bail if game was terminated/finished by host
+  let snap = await get(ref(database, `games/${gameId}`));
+  if (!snap.exists()) return;
+  let rawGame = snap.val();
+  if (rawGame.status !== "results") return; // Host may have terminated
+
+  // Step 3: Advance to leaderboard
+  {
+    const rankUpdates: Record<string, unknown> = {
+      [`games/${gameId}/status`]: "leaderboard",
+      [`gamesByPin/${pin}/status`]: "leaderboard",
+    };
+    const playerList = Object.values(rawGame.players || {}) as LivePlayer[];
+    const rankedPlayers = calculateRanks(playerList);
+    rankedPlayers.forEach((p) => {
+      rankUpdates[`games/${gameId}/players/${p.id}/rank`] = p.rank;
+      rankUpdates[`games/${gameId}/players/${p.id}/previousRank`] = p.previousRank;
+    });
+    await update(ref(database), rankUpdates);
+  }
+
+  // Step 4: Wait 2 seconds on "leaderboard"
+  await sleep(2000);
+
+  // Step 5: Re-read Firebase — bail if terminated/finished
+  snap = await get(ref(database, `games/${gameId}`));
+  if (!snap.exists()) return;
+  rawGame = snap.val();
+  if (rawGame.status !== "leaderboard") return; // Host may have terminated
+
+  // Step 6: Determine if this was the last question
+  const quizId = rawGame.quizId || "hallo";
+  const { getQuestionsForQuiz } = await import("./quiz-questions-data");
+  const questions = getQuestionsForQuiz(quizId);
+  const currentIdx = rawGame.currentQuestionIndex || 0;
+  const isLastQuestion = currentIdx >= questions.length - 1;
+
+  if (isLastQuestion) {
+    // Game Over — show final podium
+    const finalUpdates: Record<string, unknown> = {
+      [`games/${gameId}/status`]: "finished",
+      [`gamesByPin/${pin}/status`]: "finished",
+    };
+    await update(ref(database), finalUpdates);
+  } else {
+    // Advance to next question
+    const nextIdx = currentIdx + 1;
+    const now = Date.now();
+    const endsAt = now + 15000;
+    const playersMap = rawGame.players || {};
+
+    const nextQUpdates: Record<string, unknown> = {
+      [`games/${gameId}/status`]: "question",
+      [`gamesByPin/${pin}/status`]: "question",
+      [`games/${gameId}/currentQuestionIndex`]: nextIdx,
+      [`games/${gameId}/timeRemaining`]: 15,
+      [`games/${gameId}/questionStartedAt`]: now,
+      [`games/${gameId}/questionEndsAt`]: endsAt,
+    };
+
+    // Reset per-question answer fields for active (non-submitted) players only
+    Object.keys(playersMap).forEach((pId) => {
+      const p = playersMap[pId] as LivePlayer;
+      if (!p.hasSubmitted) {
+        nextQUpdates[`games/${gameId}/players/${pId}/selectedAnswerIndex`] = null;
+        nextQUpdates[`games/${gameId}/players/${pId}/isCorrect`] = null;
+        nextQUpdates[`games/${gameId}/players/${pId}/answerTimeSeconds`] = null;
+        nextQUpdates[`games/${gameId}/players/${pId}/xpEarnedLastQuestion`] = null;
+      }
+    });
+
+    await update(ref(database), nextQUpdates);
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * 7. Realtime Listener Subscription for Firebase Game updates
+ * Uses the unsubscribe function returned by onValue() — NOT off().
  */
 export function subscribeToFirebaseLiveGame(
   pin: string,
   callback: (game: LiveGame) => void
 ): () => void {
   let unsubscribed = false;
-  let activeGameRef: any = null;
-  let listenerHandle: any = null;
+  let unsubscribeListener: (() => void) | null = null;
 
   getFirebaseGameIdByPin(pin).then((gameId) => {
     if (unsubscribed || !gameId) return;
 
-    activeGameRef = ref(database, `games/${gameId}`);
+    const activeGameRef = ref(database, `games/${gameId}`);
 
-    listenerHandle = onValue(activeGameRef, (snapshot) => {
-      if (unsubscribed || !snapshot.exists()) return;
-      const raw = snapshot.val();
+    // onValue() returns an unsubscribe function — store and call it on cleanup
+    unsubscribeListener = onValue(
+      activeGameRef,
+      (snapshot) => {
+        if (unsubscribed || !snapshot.exists()) return;
+        const raw = snapshot.val();
 
-      const playersMap = raw.players || {};
-      const playerList = calculateRanks(Object.values(playersMap) as LivePlayer[]);
+        const playersMap = raw.players || {};
+        const playerList = calculateRanks(Object.values(playersMap) as LivePlayer[]);
 
-      // Compute client-side remaining time based on server timestamps
-      let timeRemaining = raw.timeRemaining || 15;
-      if (raw.status === "question" && raw.questionEndsAt) {
-        const remainingMs = raw.questionEndsAt - Date.now();
-        timeRemaining = Math.max(0, Math.ceil(remainingMs / 1000));
+        // Compute client-side remaining time based on server timestamps
+        let timeRemaining = raw.timeRemaining || 15;
+        if (raw.status === "question" && raw.questionEndsAt) {
+          const remainingMs = raw.questionEndsAt - Date.now();
+          timeRemaining = Math.max(0, Math.ceil(remainingMs / 1000));
+        }
+
+        const game: LiveGame = {
+          gameId: raw.gameId || gameId,
+          pin: raw.pin || pin,
+          hostId: raw.hostId || "host-user",
+          quizId: raw.quizId || "hallo",
+          status: raw.status || "lobby",
+          currentQuestionIndex: raw.currentQuestionIndex || 0,
+          totalQuestions: raw.totalQuestions || 8,
+          timeRemaining,
+          questionStartTime: raw.questionStartedAt,
+          players: playerList,
+          createdAt: raw.createdAt || Date.now(),
+        };
+
+        callback(game);
+      },
+      (error) => {
+        console.error("Firebase live game listener error:", error);
       }
-
-      const game: LiveGame = {
-        gameId: raw.gameId || gameId,
-        pin: raw.pin || pin,
-        hostId: raw.hostId || "host-user",
-        quizId: raw.quizId || "hallo",
-        status: raw.status || "lobby",
-        currentQuestionIndex: raw.currentQuestionIndex || 0,
-        totalQuestions: raw.totalQuestions || 8,
-        timeRemaining,
-        questionStartTime: raw.questionStartedAt,
-        players: playerList,
-        createdAt: raw.createdAt || Date.now(),
-      };
-
-      callback(game);
-    });
+    );
   });
 
   return () => {
     unsubscribed = true;
-    if (activeGameRef && listenerHandle) {
-      off(activeGameRef, "value", listenerHandle);
+    if (unsubscribeListener) {
+      unsubscribeListener();
+      unsubscribeListener = null;
     }
   };
 }

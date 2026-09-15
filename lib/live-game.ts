@@ -1,9 +1,9 @@
 /**
  * Live Multiplayer Realtime Engine for GermanQuest
  *
- * Provides typed state management for Live Kahoot-style classroom games.
- * Backed by Firebase Realtime Database for true cross-device realtime synchronization,
- * with automatic fallback to BroadcastChannel/localStorage for offline/dev resiliency.
+ * Firebase Realtime Database is the authoritative source of truth.
+ * localStorage/BroadcastChannel are used only as non-authoritative convenience
+ * caches for same-device fallback — they never override Firebase state.
  */
 
 import { getQuizById, QUIZZES } from "@/lib/quiz-data";
@@ -16,7 +16,7 @@ import {
   advanceFirebaseLiveGameState,
   subscribeToFirebaseLiveGame,
   calculateRanks,
-  finalizeFirebaseQuestionResults,
+  finishCurrentFirebaseQuestion,
   terminateFirebaseLiveGame,
   submitPlayerQuizEarlyInFirebase,
 } from "./firebase-live-game";
@@ -65,11 +65,6 @@ const CHANNEL_NAME = "gq_live_game_channel";
 
 /* ── Local Helper Functions ────────────────────────────────────────── */
 
-function getRandomPin(): string {
-  const num = Math.floor(100000 + Math.random() * 900000);
-  return num.toString();
-}
-
 function getInitials(name: string): string {
   return (
     name
@@ -86,6 +81,10 @@ function getStorageKey(pin: string): string {
   return `${STORAGE_PREFIX}${pin}`;
 }
 
+/**
+ * Write game to localStorage and broadcast to same-tab listeners.
+ * This is a non-authoritative convenience cache — Firebase is authoritative.
+ */
 function broadcastLocalUpdate(pin: string, game: LiveGame) {
   if (typeof window === "undefined") return;
   try {
@@ -100,7 +99,7 @@ function broadcastLocalUpdate(pin: string, game: LiveGame) {
   }
 }
 
-/* ── Live Engine API (Firebase + Local Fallback Sync) ─────────────── */
+/* ── Live Engine API ──────────────────────────────────────────────── */
 
 export async function createLiveGame(quizId: string = "hallo"): Promise<LiveGame> {
   const fbGame = await createFirebaseLiveGame(quizId);
@@ -228,6 +227,10 @@ export async function startLiveGame(pin: string): Promise<LiveGame | null> {
   return game;
 }
 
+/**
+ * Player submits an answer.
+ * Firebase is authoritative — auto-advance check runs inside submitFirebaseLiveAnswer.
+ */
 export async function submitLiveAnswer(
   pin: string,
   playerId: string,
@@ -247,91 +250,9 @@ export async function submitLiveAnswer(
     console.warn("submitFirebaseLiveAnswer warning:", err);
   }
 
-  const game = getLiveGameByPin(pin);
-  if (!game) return null;
-
-  const player = game.players.find((p) => p.id === playerId);
-  if (!player || typeof player.selectedAnswerIndex === "number") return game;
-
-  const isCorrect = answerIndex === correctAnswerIndex;
-  player.selectedAnswerIndex = answerIndex;
-  player.answerTimeSeconds = 15 - Math.max(0, timeRemainingSeconds);
-  player.isCorrect = isCorrect;
-
-  if (isCorrect) {
-    const baseXP = 100;
-    const speedBonus = Math.round(timeRemainingSeconds * 10);
-    const streakBonus = player.currentStreak * 15;
-    const xpEarned = baseXP + speedBonus + streakBonus;
-
-    player.score += xpEarned;
-    player.xpEarnedLastQuestion = xpEarned;
-    player.currentStreak += 1;
-    if (player.currentStreak > player.bestStreak) {
-      player.bestStreak = player.currentStreak;
-    }
-  } else {
-    player.xpEarnedLastQuestion = 0;
-    player.currentStreak = 0;
-  }
-
-  broadcastLocalUpdate(pin, game);
-  return game;
-}
-
-export async function simulateDemoAnswers(pin: string, correctAnswerIndex: number): Promise<LiveGame | null> {
-  try {
-    await finalizeFirebaseQuestionResults(pin, correctAnswerIndex);
-  } catch (err) {
-    console.warn("finalizeFirebaseQuestionResults warning:", err);
-  }
-
-  const game = getLiveGameByPin(pin);
-  if (!game) return null;
-
-  game.players.forEach((p) => {
-    if (p.isHost) return;
-
-    if (p.selectedAnswerIndex !== undefined && p.selectedAnswerIndex !== null) {
-      // Real submitted answer -- keep exact result
-      return;
-    }
-
-    if (p.id.startsWith("demo-")) {
-      // Demo Bot simulation
-      const isCorrect = Math.random() < 0.7;
-      const chosen = isCorrect
-        ? correctAnswerIndex
-        : (correctAnswerIndex + 1) % 4;
-
-      const timeRemaining = Math.floor(Math.random() * 10) + 3;
-      p.selectedAnswerIndex = chosen;
-      p.isCorrect = isCorrect;
-
-      if (isCorrect) {
-        const xp = 100 + timeRemaining * 8 + p.currentStreak * 10;
-        p.score += xp;
-        p.xpEarnedLastQuestion = xp;
-        p.currentStreak += 1;
-        if (p.currentStreak > p.bestStreak) {
-          p.bestStreak = p.currentStreak;
-        }
-      } else {
-        p.xpEarnedLastQuestion = 0;
-        p.currentStreak = 0;
-      }
-    } else {
-      // Real human participant timeout / unanswered: 0 points, streak reset
-      p.selectedAnswerIndex = -1;
-      p.isCorrect = false;
-      p.xpEarnedLastQuestion = 0;
-      p.currentStreak = 0;
-    }
-  });
-
-  recalculateRanks(game);
-  broadcastLocalUpdate(pin, game);
-  return game;
+  // Return cached local game for immediate UI feedback.
+  // Firebase onValue will deliver the authoritative update shortly after.
+  return getLiveGameByPin(pin);
 }
 
 export function recalculateRanks(game: LiveGame) {
@@ -346,6 +267,10 @@ export function recalculateRanks(game: LiveGame) {
   });
 }
 
+/**
+ * @deprecated Use finishCurrentFirebaseQuestion() directly from firebase-live-game.ts.
+ * Kept as a pass-through to avoid breaking any remaining call sites during refactor.
+ */
 export async function advanceLiveGameState(
   pin: string,
   nextStatus: LiveGameStatus
@@ -356,28 +281,7 @@ export async function advanceLiveGameState(
     console.warn("advanceFirebaseLiveGameState warning:", err);
   }
 
-  const game = getLiveGameByPin(pin);
-  if (!game) return null;
-
-  game.status = nextStatus;
-
-  if (nextStatus === "question") {
-    game.currentQuestionIndex += 1;
-    game.timeRemaining = 15;
-    game.questionStartTime = Date.now();
-
-    game.players.forEach((p) => {
-      p.selectedAnswerIndex = undefined;
-      p.isCorrect = undefined;
-      p.answerTimeSeconds = undefined;
-      p.xpEarnedLastQuestion = undefined;
-    });
-  } else if (nextStatus === "results" || nextStatus === "leaderboard" || nextStatus === "terminated") {
-    recalculateRanks(game);
-  }
-
-  broadcastLocalUpdate(pin, game);
-  return game;
+  return getLiveGameByPin(pin);
 }
 
 export async function terminateLiveGame(pin: string): Promise<boolean> {
@@ -400,6 +304,11 @@ export async function submitPlayerQuizEarly(
     return false;
   }
 }
+
+/**
+ * Re-export finishCurrentFirebaseQuestion for use in play/page.tsx host controls.
+ */
+export { finishCurrentFirebaseQuestion } from "./firebase-live-game";
 
 export function subscribeToLiveGame(
   pin: string,

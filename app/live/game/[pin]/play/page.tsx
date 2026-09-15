@@ -8,10 +8,9 @@ import {
   getLiveGameByPin,
   subscribeToLiveGame,
   submitLiveAnswer,
-  simulateDemoAnswers,
-  advanceLiveGameState,
   terminateLiveGame,
   submitPlayerQuizEarly,
+  finishCurrentFirebaseQuestion,
   type LiveGame,
 } from "@/lib/live-game";
 import { getQuizById, QUIZZES } from "@/lib/quiz-data";
@@ -35,6 +34,7 @@ function LiveGamePlayContent() {
   const role = (searchParams?.get("role") as "host" | "player") || "player";
   const playerId = searchParams?.get("playerId") || "";
 
+  // ── All hooks declared unconditionally at the top (Rules of Hooks) ─────────
   const profile = usePlayerStats();
   const [game, setGame] = React.useState<LiveGame | null>(null);
   const [isMounted, setIsMounted] = React.useState(false);
@@ -43,11 +43,16 @@ function LiveGamePlayContent() {
   const [showTerminateConfirm, setShowTerminateConfirm] = React.useState(false);
   const [showSubmitEarlyConfirm, setShowSubmitEarlyConfirm] = React.useState(false);
   const [isTerminating, setIsTerminating] = React.useState(false);
+  const [isEndingQuestion, setIsEndingQuestion] = React.useState(false);
   const [terminateError, setTerminateError] = React.useState<string | null>(null);
 
+  /**
+   * Prevent double-firing of host transition triggers.
+   * This ref is reset whenever the Firebase status/question changes.
+   */
   const transitionInProgressRef = React.useRef(false);
 
-  // Subscribe to real-time updates after hydration mount
+  // ── Mount + Firebase subscription ─────────────────────────────────────────
   React.useEffect(() => {
     setIsMounted(true);
     if (!pin) {
@@ -69,85 +74,14 @@ function LiveGamePlayContent() {
     return () => unsubscribe();
   }, [pin]);
 
-  // Clear transition lock and optimistic answer state when moving to a new question or changing status
+  // ── Reset transition lock when Firebase delivers a new status or question ──
   React.useEffect(() => {
     setOptimisticAnswer(null);
     transitionInProgressRef.current = false;
+    setIsEndingQuestion(false);
   }, [game?.currentQuestionIndex, game?.status]);
 
-  // Host-driven Automatic State Machine:
-  // 1. QUESTION: Auto-finalize when all active (non-submitted) players have answered
-  React.useEffect(() => {
-    if (!game || role !== "host" || game.status !== "question") return;
-
-    const activePlayers = game.players.filter((p) => !p.isHost && !p.hasSubmitted);
-    const allActiveAnswered =
-      activePlayers.length > 0 &&
-      activePlayers.every((p) => typeof p.selectedAnswerIndex === "number" && p.selectedAnswerIndex >= 0);
-
-    if (allActiveAnswered) {
-      if (transitionInProgressRef.current) return;
-      transitionInProgressRef.current = true;
-
-      const questions = getQuestionsForQuiz(game.quizId);
-      const currentQuestion = questions[game.currentQuestionIndex % questions.length];
-      const correctAnswerIndex = currentQuestion
-        ? Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer))
-        : 0;
-
-      simulateDemoAnswers(pin, correctAnswerIndex);
-    }
-  }, [game, pin, role]);
-
-  // 2. RESULTS -> LEADERBOARD: Auto-advance after 2.5 seconds delay
-  React.useEffect(() => {
-    if (!game || role !== "host" || game.status !== "results") return;
-
-    const timer = setTimeout(async () => {
-      if (transitionInProgressRef.current) return;
-      transitionInProgressRef.current = true;
-      await advanceLiveGameState(pin, "leaderboard");
-    }, 2500);
-
-    return () => clearTimeout(timer);
-  }, [game?.status, game?.currentQuestionIndex, pin, role]);
-
-  // 3. LEADERBOARD -> QUESTION / FINISHED: Auto-advance after 2.5 seconds delay
-  React.useEffect(() => {
-    if (!game || role !== "host" || game.status !== "leaderboard") return;
-
-    const questions = getQuestionsForQuiz(game.quizId);
-    const isLastQuestion = game.currentQuestionIndex >= questions.length - 1;
-
-    const timer = setTimeout(async () => {
-      if (transitionInProgressRef.current) return;
-      transitionInProgressRef.current = true;
-
-      if (isLastQuestion) {
-        await advanceLiveGameState(pin, "finished");
-      } else {
-        await advanceLiveGameState(pin, "question");
-      }
-    }, 2500);
-
-    return () => clearTimeout(timer);
-  }, [game?.status, game?.currentQuestionIndex, game?.quizId, pin, role]);
-
-  const handleTimeUp = React.useCallback(async () => {
-    if (role === "host" && game?.status === "question") {
-      if (transitionInProgressRef.current) return;
-      transitionInProgressRef.current = true;
-
-      const questions = getQuestionsForQuiz(game.quizId);
-      const currentQuestion = questions[game.currentQuestionIndex % questions.length];
-      const correctAnswerIndex = currentQuestion
-        ? Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer))
-        : 0;
-
-      await simulateDemoAnswers(pin, correctAnswerIndex);
-    }
-  }, [role, game?.status, game?.quizId, game?.currentQuestionIndex, pin]);
-
+  // ── NavBar element (shared across all render branches) ────────────────────
   const navBarElement = (
     <NavBar
       links={[
@@ -159,7 +93,7 @@ function LiveGamePlayContent() {
     />
   );
 
-  // 1. Initial Loading State (rendered on SSR and first client hydration pass)
+  // ── 1. SSR / pre-hydration loading state ──────────────────────────────────
   if (!isMounted || (!hasCheckedGame && !game)) {
     return (
       <>
@@ -177,7 +111,7 @@ function LiveGamePlayContent() {
     );
   }
 
-  // 2. Game Not Found State (rendered after mount if session doesn't exist)
+  // ── 2. Game not found ──────────────────────────────────────────────────────
   if (!game) {
     return (
       <>
@@ -200,8 +134,8 @@ function LiveGamePlayContent() {
     );
   }
 
+  // ── Derived values (computed from authoritative Firebase game state) ────────
   const isHost = role === "host";
-  const quiz = getQuizById(game.quizId) || QUIZZES[0];
   const questions = getQuestionsForQuiz(game.quizId);
   const currentQuestion = questions[game.currentQuestionIndex % questions.length];
   const correctAnswerIndex = currentQuestion
@@ -210,6 +144,8 @@ function LiveGamePlayContent() {
 
   const isLastQuestion = game.currentQuestionIndex >= questions.length - 1;
   const currentPlayer = game.players.find((p) => p.id === playerId);
+
+  // Merge optimistic UI answer with authoritative server answer
   const serverAnswer = currentPlayer?.selectedAnswerIndex;
   const selectedAnswerIndex =
     typeof serverAnswer === "number" && serverAnswer >= 0
@@ -223,7 +159,7 @@ function LiveGamePlayContent() {
     (p) => typeof p.selectedAnswerIndex === "number" && p.selectedAnswerIndex >= 0
   ).length;
 
-  // Handlers
+  // ── Player answer handler ──────────────────────────────────────────────────
   const handleSelectAnswer = (index: number) => {
     if (
       isHost ||
@@ -233,25 +169,52 @@ function LiveGamePlayContent() {
       game.timeRemaining <= 0
     )
       return;
+
     setOptimisticAnswer(index);
-    submitLiveAnswer(
-      pin,
-      playerId,
-      index,
-      game.timeRemaining,
-      correctAnswerIndex
-    );
+    // submitLiveAnswer writes to Firebase; checkAndAutoAdvanceQuestionIfAllAnswered
+    // runs inside submitFirebaseLiveAnswer after the write — no React effects needed.
+    submitLiveAnswer(pin, playerId, index, game.timeRemaining, correctAnswerIndex);
   };
 
+  // ── Host: END QUESTION EARLY ──────────────────────────────────────────────
+  // Calls finishCurrentFirebaseQuestion() — the single authoritative finalizer.
+  // advanceAfterQuestion() is called inside it, driving results->leaderboard->next.
   const handleHostEndQuestion = async () => {
-    if (isHost && currentQuestion && game.status === "question") {
-      if (transitionInProgressRef.current) return;
-      transitionInProgressRef.current = true;
+    if (!isHost || !currentQuestion || game.status !== "question") return;
+    if (transitionInProgressRef.current || isEndingQuestion) return;
 
-      await simulateDemoAnswers(pin, correctAnswerIndex);
+    transitionInProgressRef.current = true;
+    setIsEndingQuestion(true);
+
+    try {
+      await finishCurrentFirebaseQuestion(pin, correctAnswerIndex);
+    } finally {
+      // Reset handled by the Firebase status change effect
     }
   };
 
+  // ── Host: timer reached zero ───────────────────────────────────────────────
+  // Same function — finishCurrentFirebaseQuestion is idempotent.
+  const handleTimeUp = React.useCallback(async () => {
+    if (role !== "host" || game?.status !== "question") return;
+    if (transitionInProgressRef.current) return;
+    transitionInProgressRef.current = true;
+
+    const qs = getQuestionsForQuiz(game.quizId);
+    const q = qs[game.currentQuestionIndex % qs.length];
+    const correctIdx = q
+      ? Math.max(0, q.options.indexOf(q.correctAnswer))
+      : 0;
+
+    try {
+      await finishCurrentFirebaseQuestion(pin, correctIdx);
+    } catch (err) {
+      console.error("handleTimeUp finishCurrentFirebaseQuestion error:", err);
+      transitionInProgressRef.current = false;
+    }
+  }, [role, game?.status, game?.quizId, game?.currentQuestionIndex, pin]);
+
+  // ── Host: terminate quiz ───────────────────────────────────────────────────
   const handleHostTerminateQuiz = async () => {
     setIsTerminating(true);
     setTerminateError(null);
@@ -270,6 +233,7 @@ function LiveGamePlayContent() {
     }
   };
 
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <>
       <NavBar
@@ -299,6 +263,7 @@ function LiveGamePlayContent() {
       <main className="flex-1 bg-background py-10 md:py-16">
         <div className="gq-container max-w-4xl">
           <AnimatePresence mode="wait">
+
             {/* VIEW 1: FINISHED OR TERMINATED */}
             {(game.status === "finished" || game.status === "terminated") && (
               <div key="final-view" className="space-y-6">
@@ -320,7 +285,7 @@ function LiveGamePlayContent() {
               </div>
             )}
 
-            {/* VIEW 2: PLAYER SUBMITTED EARLY WAITING VIEW */}
+            {/* VIEW 2: PLAYER SUBMITTED EARLY — waiting for final results */}
             {game.status !== "finished" &&
               game.status !== "terminated" &&
               !isHost &&
@@ -349,7 +314,7 @@ function LiveGamePlayContent() {
                 </motion.div>
               )}
 
-            {/* VIEW 3: QUESTION (for host or active player) */}
+            {/* VIEW 3: ACTIVE QUESTION (host or non-submitted player) */}
             {game.status === "question" &&
               currentQuestion &&
               (isHost || !currentPlayer?.hasSubmitted) && (
@@ -386,7 +351,7 @@ function LiveGamePlayContent() {
                     disabled={isHost || currentPlayer?.hasSubmitted}
                   />
 
-                  {/* Secondary Action: Player Submit Quiz Early */}
+                  {/* Player: Submit Quiz Early */}
                   {!isHost && !currentPlayer?.hasSubmitted && (
                     <div className="flex justify-center pt-2">
                       <GQButton
@@ -401,7 +366,7 @@ function LiveGamePlayContent() {
                     </div>
                   )}
 
-                  {/* Host Control Action Bar */}
+                  {/* Host Control Bar */}
                   {isHost && (
                     <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-card border border-[#10233F]/10 shadow-2xs">
                       <span className="text-xs font-bold text-muted-foreground">
@@ -414,9 +379,16 @@ function LiveGamePlayContent() {
                           variant="gold"
                           size="sm"
                           onClick={handleHostEndQuestion}
-                          icon={<Play size={14} />}
+                          disabled={isEndingQuestion}
+                          icon={
+                            isEndingQuestion ? (
+                              <Loader2 size={14} className="animate-spin" />
+                            ) : (
+                              <Play size={14} />
+                            )
+                          }
                         >
-                          END QUESTION EARLY
+                          {isEndingQuestion ? "ENDING..." : "END QUESTION EARLY"}
                         </GQButton>
 
                         <GQButton
@@ -494,7 +466,7 @@ function LiveGamePlayContent() {
               )}
           </AnimatePresence>
 
-          {/* Modal Dialog: Host Terminate Quiz Confirmation */}
+          {/* Modal: Host Terminate Quiz Confirmation */}
           {showTerminateConfirm && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-fade-in">
               <div className="max-w-md w-full rounded-3xl p-6 bg-card border-2 border-rose-500/30 shadow-2xl space-y-4 text-center">
@@ -507,7 +479,8 @@ function LiveGamePlayContent() {
                 </h3>
 
                 <p className="text-sm font-semibold text-muted-foreground leading-relaxed">
-                  This will end the live quiz for all players immediately and show the final leaderboard.
+                  This will end the live quiz for all players immediately and show
+                  the final leaderboard.
                 </p>
 
                 {terminateError && (
@@ -534,7 +507,11 @@ function LiveGamePlayContent() {
                     disabled={isTerminating}
                     className="bg-rose-600 hover:bg-rose-700 border-rose-700 text-white font-bold"
                     onClick={handleHostTerminateQuiz}
-                    icon={isTerminating ? <Loader2 size={14} className="animate-spin" /> : undefined}
+                    icon={
+                      isTerminating ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : undefined
+                    }
                   >
                     {isTerminating ? "Terminating..." : "Terminate Quiz"}
                   </GQButton>
@@ -543,7 +520,7 @@ function LiveGamePlayContent() {
             </div>
           )}
 
-          {/* Modal Dialog: Player Submit Quiz Early Confirmation */}
+          {/* Modal: Player Submit Quiz Early Confirmation */}
           {showSubmitEarlyConfirm && (
             <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-fade-in">
               <div className="max-w-md w-full rounded-3xl p-6 bg-card border-2 border-amber-500/30 shadow-2xl space-y-4 text-center">
@@ -556,7 +533,8 @@ function LiveGamePlayContent() {
                 </h3>
 
                 <p className="text-sm font-semibold text-muted-foreground leading-relaxed">
-                  You will leave the active quiz and receive your current personal result. You can wait for the final leaderboard afterward.
+                  You will leave the active quiz and receive your current personal
+                  result. You can wait for the final leaderboard afterward.
                 </p>
 
                 <div className="flex items-center justify-center gap-3 pt-2">
