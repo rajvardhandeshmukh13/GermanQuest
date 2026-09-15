@@ -37,6 +37,7 @@ function LiveGamePlayContent() {
   const [game, setGame] = React.useState<LiveGame | null>(null);
   const [isMounted, setIsMounted] = React.useState(false);
   const [hasCheckedGame, setHasCheckedGame] = React.useState(false);
+  const [optimisticAnswer, setOptimisticAnswer] = React.useState<number | null>(null);
 
   // Subscribe to real-time updates after hydration mount
   React.useEffect(() => {
@@ -59,6 +60,11 @@ function LiveGamePlayContent() {
 
     return () => unsubscribe();
   }, [pin]);
+
+  // Clear optimistic answer state when moving to a new question or changing status
+  React.useEffect(() => {
+    setOptimisticAnswer(null);
+  }, [game?.currentQuestionIndex, game?.status]);
 
   const navBarElement = (
       <NavBar
@@ -111,13 +117,6 @@ function LiveGamePlayContent() {
       </>
     );
   }
-
-  const [optimisticAnswer, setOptimisticAnswer] = React.useState<number | null>(null);
-
-  // Clear optimistic answer state when moving to a new question or changing status
-  React.useEffect(() => {
-    setOptimisticAnswer(null);
-  }, [game?.currentQuestionIndex, game?.status]);
 
   const isHost = role === "host";
   const quiz = getQuizById(game.quizId) || QUIZZES[0];
