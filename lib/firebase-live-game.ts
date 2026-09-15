@@ -463,8 +463,6 @@ export async function finishCurrentFirebaseQuestion(
   pin: string,
   forceCorrectAnswerIndex?: number
 ): Promise<boolean> {
-  console.log("[LIVE] QUESTION -> RESULTS START", { pin });
-
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) {
     const err = new Error(`Game ID not found for pin ${pin}`);
@@ -473,7 +471,7 @@ export async function finishCurrentFirebaseQuestion(
       pin,
       error: err.message,
     });
-    throw err;
+    return false;
   }
 
   const gameRef = ref(database, `games/${gameId}`);
@@ -487,14 +485,11 @@ export async function finishCurrentFirebaseQuestion(
         return currentData;
       }
 
-      currentIdx = currentData.currentQuestionIndex || 0;
+      if (currentData.status === "terminated") {
+        return undefined;
+      }
 
-      console.log("[LIVE] GAME STATE inside transaction", {
-        gameId,
-        pin,
-        status: currentData.status,
-        currentQuestionIndex: currentIdx,
-      });
+      currentIdx = currentData.currentQuestionIndex || 0;
 
       // IDEMPOTENT GUARD: Only transition if currently in "question" status
       if (currentData.status !== "question") {
@@ -576,23 +571,26 @@ export async function finishCurrentFirebaseQuestion(
       });
       currentData.players = updatedPlayersMap;
 
+      const now = Date.now();
       currentData.status = "results";
       currentData.timeRemaining = 0;
+      currentData.resultsStartedAt = now;
+      currentData.resultsEndsAt = now + 3000;
 
       return currentData;
     });
 
     if (wasAlreadyFinalized) {
-      console.log("[LIVE] QUESTION -> RESULTS: already finalized (idempotent exit)");
+      console.log("[LIVE] QUESTION -> RESULTS skipped (already finalized)", { pin, gameId });
       return true;
     }
 
     if (result.committed) {
-      console.log("[LIVE] QUESTION -> RESULTS SUCCESS", { pin, gameId, currentQuestionIndex: currentIdx });
+      console.log("[LIVE] QUESTION -> RESULTS", { pin, gameId, status: "results", currentQuestionIndex: currentIdx });
       await set(ref(database, `gamesByPin/${pin}/status`), "results");
       return true;
     } else {
-      console.log("[LIVE] QUESTION -> RESULTS: transaction skipped (another client finalized first)");
+      console.log("[LIVE] QUESTION -> RESULTS skipped (transaction returned undefined or state changed)", { pin, gameId });
       return false;
     }
   } catch (error: any) {
@@ -602,19 +600,18 @@ export async function finishCurrentFirebaseQuestion(
       gameId,
       error: error?.message || error,
     });
-    throw error;
+    return false;
   }
 }
 
 /**
  * 2. RESULTS → LEADERBOARD
- * advanceAfterQuestion(pin)
+ * advanceResultsToLeaderboard(pin)
  *
  * Uses ATOMIC Firebase runTransaction compare-and-set:
- * - Transitions status from "results" -> "leaderboard"
+ * - Transitions status from "results" -> "leaderboard" after 3s results display.
  */
-export async function advanceAfterQuestion(pin: string): Promise<boolean> {
-  console.log("[LIVE] RESULTS -> LEADERBOARD START", { pin });
+export async function advanceResultsToLeaderboard(pin: string): Promise<boolean> {
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) return false;
 
@@ -628,8 +625,17 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
         return undefined; // Abort if not in results state
       }
 
+      if (currentData.resultsEndsAt && Date.now() < currentData.resultsEndsAt) {
+        return undefined; // Display duration not elapsed
+      }
+
       currentIdx = currentData.currentQuestionIndex || 0;
+      const now = Date.now();
+
       currentData.status = "leaderboard";
+      currentData.leaderboardStartedAt = now;
+      currentData.leaderboardEndsAt = now + 3000;
+
       const playerList = Object.values(currentData.players || {}) as LivePlayer[];
       const rankedPlayers = calculateRanks(playerList);
       const updatedPlayersMap: Record<string, LivePlayer> = {};
@@ -642,16 +648,16 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
     });
 
     if (!result.committed) {
-      console.log("[LIVE] RESULTS -> LEADERBOARD transaction skipped (not in results state)");
+      console.log("[LIVE] RESULTS -> LEADERBOARD skipped (status not results or timer not expired)", { pin, gameId });
       return false;
     }
 
-    console.log("[LIVE] RESULTS -> LEADERBOARD SUCCESS", { pin, gameId, currentQuestionIndex: currentIdx });
+    console.log("[LIVE] RESULTS -> LEADERBOARD", { pin, gameId, status: "leaderboard", currentQuestionIndex: currentIdx });
     await set(ref(database, `gamesByPin/${pin}/status`), "leaderboard");
     return true;
   } catch (error: any) {
     console.error("[LIVE] FIREBASE ERROR", {
-      operation: "advanceAfterQuestion",
+      operation: "advanceResultsToLeaderboard",
       pin,
       gameId,
       error: error?.message || error,
@@ -662,7 +668,7 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
 
 /**
  * 3. LEADERBOARD → QUESTION (next question) OR LEADERBOARD → FINISHED
- * startNextFirebaseQuestion(pin)
+ * advanceLeaderboardToNextQuestion(pin)
  *
  * Uses ATOMIC Firebase runTransaction compare-and-set:
  * - Checks if current question index is the last question.
@@ -673,10 +679,9 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
  *     - sets timeRemaining = 15
  *     - sets questionStartedAt = Date.now()
  *     - sets questionEndsAt = Date.now() + 15000
- *     - resets selectedAnswerIndex, isCorrect, answerTimeSeconds, xpEarnedLastQuestion for active players (!hasSubmitted)
+ *     - resets selectedAnswerIndex, isCorrect, answerTimeSeconds, xpEarnedLastQuestion to null for active players (!hasSubmitted)
  */
-export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
-  console.log("[LIVE] LEADERBOARD -> NEXT QUESTION / FINISHED START", { pin });
+export async function advanceLeaderboardToNextQuestion(pin: string): Promise<boolean> {
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) return false;
 
@@ -691,19 +696,22 @@ export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
         return undefined; // Abort if not in leaderboard state
       }
 
+      if (currentData.leaderboardEndsAt && Date.now() < currentData.leaderboardEndsAt) {
+        return undefined; // Display duration not elapsed
+      }
+
       const quizId = currentData.quizId || "hallo";
       const questions = getQuestionsForQuiz(quizId);
       const currentIdx = currentData.currentQuestionIndex || 0;
       const totalQ = currentData.totalQuestions || questions.length;
-      const isLast = currentIdx >= totalQ - 1;
+      const nextIdx = currentIdx + 1;
 
-      if (isLast) {
+      if (nextIdx >= totalQ) {
         currentData.status = "finished";
         currentData.timeRemaining = 0;
         isFinished = true;
         finalIdx = currentIdx;
       } else {
-        const nextIdx = currentIdx + 1;
         const now = Date.now();
         const endsAt = now + 15000;
 
@@ -714,15 +722,15 @@ export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
         currentData.questionEndsAt = endsAt;
         finalIdx = nextIdx;
 
-        // Reset per-question answer fields for active (non-submitted) players
+        // Reset per-question answer fields for active (non-submitted) players using null
         const playersMap = currentData.players || {};
         Object.keys(playersMap).forEach((pId) => {
           const p = playersMap[pId] as LivePlayer;
           if (!p.hasSubmitted) {
-            p.selectedAnswerIndex = undefined;
-            p.isCorrect = undefined;
-            p.answerTimeSeconds = undefined;
-            p.xpEarnedLastQuestion = undefined;
+            p.selectedAnswerIndex = null;
+            p.isCorrect = null;
+            p.answerTimeSeconds = null;
+            p.xpEarnedLastQuestion = null;
           }
         });
       }
@@ -731,7 +739,7 @@ export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
     });
 
     if (!result.committed) {
-      console.log("[LIVE] LEADERBOARD -> NEXT QUESTION transaction skipped (not in leaderboard state)");
+      console.log("[LIVE] LEADERBOARD -> NEXT QUESTION skipped (status not leaderboard or timer not expired)", { pin, gameId });
       return false;
     }
 
@@ -739,15 +747,15 @@ export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
     await set(ref(database, `gamesByPin/${pin}/status`), finalStatus);
 
     if (isFinished) {
-      console.log("[LIVE] LEADERBOARD -> FINISHED SUCCESS", { pin, gameId });
+      console.log("[LIVE] LEADERBOARD -> FINISHED", { pin, gameId, status: "finished", currentQuestionIndex: finalIdx });
     } else {
-      console.log("[LIVE] LEADERBOARD -> NEXT QUESTION SUCCESS", { pin, gameId, newQuestionIndex: finalIdx });
+      console.log("[LIVE] LEADERBOARD -> QUESTION", { pin, gameId, status: "question", currentQuestionIndex: finalIdx });
     }
 
     return true;
   } catch (error: any) {
     console.error("[LIVE] FIREBASE ERROR", {
-      operation: "startNextFirebaseQuestion",
+      operation: "advanceLeaderboardToNextQuestion",
       pin,
       gameId,
       error: error?.message || error,
@@ -757,7 +765,53 @@ export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
 }
 
 /**
- * 9. Realtime Listener Subscription for Firebase Game updates
+ * 4. Authoritative Live Game Synchronization Transition Engine
+ * Periodically called by connected clients to evaluate timer expirations and drive Firebase state transitions.
+ * Protected by atomic Firebase runTransaction status/timestamp guards.
+ */
+export async function runLiveGameTransitionEngine(pin: string): Promise<boolean> {
+  const gameId = await getFirebaseGameIdByPin(pin);
+  if (!gameId) return false;
+
+  const snap = await get(ref(database, `games/${gameId}`));
+  if (!snap.exists()) return false;
+  const rawGame = snap.val() as LiveGame;
+
+  if (!rawGame || rawGame.status === "finished" || rawGame.status === "terminated") {
+    return false;
+  }
+
+  const now = Date.now();
+
+  console.log("[LIVE ENGINE]", {
+    pin,
+    gameId,
+    status: rawGame.status,
+    currentQuestionIndex: rawGame.currentQuestionIndex,
+    questionEndsAt: rawGame.questionEndsAt,
+    resultsEndsAt: rawGame.resultsEndsAt,
+    leaderboardEndsAt: rawGame.leaderboardEndsAt,
+  });
+
+  if (rawGame.status === "question") {
+    if (rawGame.questionEndsAt && rawGame.questionEndsAt <= now) {
+      return await finishCurrentFirebaseQuestion(pin);
+    }
+  } else if (rawGame.status === "results") {
+    if (rawGame.resultsEndsAt && rawGame.resultsEndsAt <= now) {
+      return await advanceResultsToLeaderboard(pin);
+    }
+  } else if (rawGame.status === "leaderboard") {
+    if (rawGame.leaderboardEndsAt && rawGame.leaderboardEndsAt <= now) {
+      return await advanceLeaderboardToNextQuestion(pin);
+    }
+  }
+
+  return false;
+}
+
+/**
+ * 5. Realtime Listener Subscription for Firebase Game updates
  */
 export function subscribeToFirebaseLiveGame(
   pin: string,
@@ -792,10 +846,16 @@ export function subscribeToFirebaseLiveGame(
           hostId: raw.hostId || "host-user",
           quizId: raw.quizId || "hallo",
           status: raw.status || "lobby",
-          currentQuestionIndex: raw.currentQuestionIndex || 0,
+          currentQuestionIndex: typeof raw.currentQuestionIndex === "number" ? raw.currentQuestionIndex : 0,
           totalQuestions: raw.totalQuestions || 8,
           timeRemaining,
           questionStartTime: raw.questionStartedAt,
+          questionStartedAt: raw.questionStartedAt,
+          questionEndsAt: raw.questionEndsAt,
+          resultsStartedAt: raw.resultsStartedAt,
+          resultsEndsAt: raw.resultsEndsAt,
+          leaderboardStartedAt: raw.leaderboardStartedAt,
+          leaderboardEndsAt: raw.leaderboardEndsAt,
           players: playerList,
           createdAt: raw.createdAt || Date.now(),
         };

@@ -16,7 +16,9 @@ import {
   subscribeToFirebaseLiveGame,
   calculateRanks,
   finishCurrentFirebaseQuestion,
-  advanceAfterQuestion,
+  advanceResultsToLeaderboard,
+  advanceLeaderboardToNextQuestion,
+  runLiveGameTransitionEngine,
   terminateFirebaseLiveGame,
   submitPlayerQuizEarlyInFirebase,
 } from "./firebase-live-game";
@@ -37,10 +39,10 @@ export interface LivePlayer {
   currentStreak: number;
   bestStreak: number;
   isHost: boolean;
-  selectedAnswerIndex?: number;
-  answerTimeSeconds?: number;
-  isCorrect?: boolean;
-  xpEarnedLastQuestion?: number;
+  selectedAnswerIndex?: number | null;
+  answerTimeSeconds?: number | null;
+  isCorrect?: boolean | null;
+  xpEarnedLastQuestion?: number | null;
   rank: number;
   previousRank?: number;
   hasSubmitted?: boolean;
@@ -56,6 +58,12 @@ export interface LiveGame {
   totalQuestions: number;
   timeRemaining: number;
   questionStartTime?: number;
+  questionStartedAt?: number;
+  questionEndsAt?: number;
+  resultsStartedAt?: number;
+  resultsEndsAt?: number;
+  leaderboardStartedAt?: number;
+  leaderboardEndsAt?: number;
   players: LivePlayer[];
   createdAt: number;
 }
@@ -267,27 +275,6 @@ export function recalculateRanks(game: LiveGame) {
   });
 }
 
-/**
- * @deprecated Use finishCurrentFirebaseQuestion() directly from firebase-live-game.ts.
- * Kept as a pass-through to avoid breaking any remaining call sites during refactor.
- */
-export async function advanceLiveGameState(
-  pin: string,
-  nextStatus: LiveGameStatus
-): Promise<LiveGame | null> {
-  try {
-    if (nextStatus === "results") {
-      await finishCurrentFirebaseQuestion(pin);
-    } else if (nextStatus === "leaderboard") {
-      await advanceAfterQuestion(pin);
-    }
-  } catch (err) {
-    console.warn("advanceLiveGameState warning:", err);
-  }
-
-  return getLiveGameByPin(pin);
-}
-
 export async function terminateLiveGame(pin: string): Promise<boolean> {
   try {
     return await terminateFirebaseLiveGame(pin);
@@ -310,12 +297,13 @@ export async function submitPlayerQuizEarly(
 }
 
 /**
- * Re-export state transition functions for use in play/page.tsx host controls.
+ * Re-export authoritative state transition functions.
  */
 export {
   finishCurrentFirebaseQuestion,
-  advanceAfterQuestion,
-  startNextFirebaseQuestion,
+  advanceResultsToLeaderboard,
+  advanceLeaderboardToNextQuestion,
+  runLiveGameTransitionEngine,
 } from "./firebase-live-game";
 
 export function subscribeToLiveGame(

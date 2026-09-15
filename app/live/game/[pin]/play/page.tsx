@@ -11,8 +11,9 @@ import {
   terminateLiveGame,
   submitPlayerQuizEarly,
   finishCurrentFirebaseQuestion,
-  advanceAfterQuestion,
-  startNextFirebaseQuestion,
+  advanceResultsToLeaderboard,
+  advanceLeaderboardToNextQuestion,
+  runLiveGameTransitionEngine,
   type LiveGame,
 } from "@/lib/live-game";
 import { getQuizById, QUIZZES } from "@/lib/quiz-data";
@@ -50,11 +51,9 @@ function LiveGamePlayContent() {
   const [terminateError, setTerminateError] = React.useState<string | null>(null);
 
   /**
-   * Transition locks / keys to ensure each step happens once per question.
+   * Ref for preventing duplicate host button clicks during async transitions
    */
   const transitionInProgressRef = React.useRef(false);
-  const resultsTransitionKeyRef = React.useRef<string | null>(null);
-  const leaderboardTransitionKeyRef = React.useRef<string | null>(null);
 
   // ── Mount + Firebase subscription ─────────────────────────────────────────
   React.useEffect(() => {
@@ -78,64 +77,25 @@ function LiveGamePlayContent() {
     return () => unsubscribe();
   }, [pin]);
 
+  // ── Authoritative Firebase State Synchronization Engine Loop ──────────────
+  React.useEffect(() => {
+    if (!pin) return;
+
+    const interval = setInterval(() => {
+      runLiveGameTransitionEngine(pin).catch(console.error);
+    }, 500);
+
+    runLiveGameTransitionEngine(pin).catch(console.error);
+
+    return () => clearInterval(interval);
+  }, [pin]);
+
   // ── Reset optimistic answer when Firebase delivers a new status or question ──
   React.useEffect(() => {
     setOptimisticAnswer(null);
     transitionInProgressRef.current = false;
     setIsEndingQuestion(false);
   }, [game?.currentQuestionIndex, game?.status]);
-
-  // ── Host-controlled transition: RESULTS -> LEADERBOARD (after 3 seconds) ──
-  React.useEffect(() => {
-    if (role !== "host" || !game || game.status !== "results") return;
-
-    const key = `${game.gameId}:${game.currentQuestionIndex}:results`;
-    if (resultsTransitionKeyRef.current === key) return;
-    resultsTransitionKeyRef.current = key;
-
-    console.log("[LIVE] Host scheduling RESULTS -> LEADERBOARD transition in 3s", {
-      pin,
-      gameId: game.gameId,
-      questionIndex: game.currentQuestionIndex,
-    });
-
-    setTimeout(() => {
-      console.log("[LIVE] 3s elapsed, executing advanceAfterQuestion", { pin });
-      advanceAfterQuestion(pin).catch((err: any) => {
-        console.error("[LIVE] FIREBASE ERROR", {
-          operation: "advanceAfterQuestionEffect",
-          pin,
-          error: err?.message || err,
-        });
-      });
-    }, 3000);
-  }, [role, game?.status, game?.currentQuestionIndex, game?.gameId, pin]);
-
-  // ── Host-controlled transition: LEADERBOARD -> NEXT QUESTION / FINISHED (after 3 seconds) ──
-  React.useEffect(() => {
-    if (role !== "host" || !game || game.status !== "leaderboard") return;
-
-    const key = `${game.gameId}:${game.currentQuestionIndex}:leaderboard`;
-    if (leaderboardTransitionKeyRef.current === key) return;
-    leaderboardTransitionKeyRef.current = key;
-
-    console.log("[LIVE] Host scheduling LEADERBOARD -> QUESTION/FINISHED transition in 3s", {
-      pin,
-      gameId: game.gameId,
-      questionIndex: game.currentQuestionIndex,
-    });
-
-    setTimeout(() => {
-      console.log("[LIVE] 3s elapsed, executing startNextFirebaseQuestion", { pin });
-      startNextFirebaseQuestion(pin).catch((err: any) => {
-        console.error("[LIVE] FIREBASE ERROR", {
-          operation: "startNextFirebaseQuestionEffect",
-          pin,
-          error: err?.message || err,
-        });
-      });
-    }, 3000);
-  }, [role, game?.status, game?.currentQuestionIndex, game?.gameId, pin]);
 
   // ── Host: timer reached zero ───────────────────────────────────────────────
   // Declared here (before any conditional return) to satisfy Rules of Hooks.

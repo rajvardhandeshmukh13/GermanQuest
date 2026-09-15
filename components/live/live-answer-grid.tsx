@@ -7,7 +7,7 @@ import { cn } from "cn";
 
 interface LiveAnswerGridProps {
   options: string[];
-  selectedIndex?: number;
+  selectedIndex?: number | null;
   onSelectOption?: (index: number) => void;
   disabled?: boolean;
   showCorrect?: boolean;
