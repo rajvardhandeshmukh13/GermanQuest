@@ -310,9 +310,13 @@ export async function submitPlayerQuizEarly(
 }
 
 /**
- * Re-export finishCurrentFirebaseQuestion and advanceAfterQuestion for use in play/page.tsx host controls.
+ * Re-export state transition functions for use in play/page.tsx host controls.
  */
-export { finishCurrentFirebaseQuestion, advanceAfterQuestion } from "./firebase-live-game";
+export {
+  finishCurrentFirebaseQuestion,
+  advanceAfterQuestion,
+  startNextFirebaseQuestion,
+} from "./firebase-live-game";
 
 export function subscribeToLiveGame(
   pin: string,

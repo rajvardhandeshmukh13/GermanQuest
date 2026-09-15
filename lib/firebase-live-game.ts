@@ -598,13 +598,11 @@ export async function finishCurrentFirebaseQuestion(
 }
 
 /**
- * B. RESULTS → LEADERBOARD → NEXT QUESTION / FINISHED
+ * B. RESULTS → LEADERBOARD
  * advanceAfterQuestion(pin)
  *
  * Uses ATOMIC Firebase runTransaction compare-and-set:
- * - Step 1: atomic transition from "results" -> "leaderboard"
- * - Waits ~2500ms
- * - Step 2: atomic transition from "leaderboard" -> "question" (+1 index) OR "finished"
+ * - Transitions status from "results" -> "leaderboard"
  */
 export async function advanceAfterQuestion(pin: string): Promise<boolean> {
   console.log("[LIVE] ADVANCE RESULTS -> LEADERBOARD START", { pin });
@@ -614,8 +612,7 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
   const gameRef = ref(database, `games/${gameId}`);
 
   try {
-    // STEP 1: Transition results -> leaderboard
-    const step1Result = await runTransaction(gameRef, (currentData) => {
+    const result = await runTransaction(gameRef, (currentData) => {
       if (!currentData || currentData.status !== "results") {
         return undefined; // Abort if not in results state
       }
@@ -632,31 +629,60 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
       return currentData;
     });
 
-    if (!step1Result.committed) {
-      console.log("[LIVE] advanceAfterQuestion: results -> leaderboard transaction skipped (not in results state)");
+    if (!result.committed) {
+      console.log("[LIVE] advanceAfterQuestion: transaction skipped (not in results state)");
       return false;
     }
 
     console.log("[LIVE] ADVANCE RESULTS -> LEADERBOARD SUCCESS");
     await set(ref(database, `gamesByPin/${pin}/status`), "leaderboard");
+    return true;
+  } catch (error: any) {
+    console.error("[LIVE] FIREBASE ERROR", {
+      operation: "advanceAfterQuestion",
+      pin,
+      gameId,
+      error: error?.message || error,
+    });
+    return false;
+  }
+}
 
-    // STEP 2: Wait ~2500ms on leaderboard
-    await sleep(2500);
+/**
+ * C. LEADERBOARD → QUESTION (next question) OR LEADERBOARD → FINISHED
+ * startNextFirebaseQuestion(pin)
+ *
+ * Uses ATOMIC Firebase runTransaction compare-and-set:
+ * - Checks if current question index is the last question.
+ * - If last: sets status = "finished"
+ * - If not last:
+ *     - increments currentQuestionIndex by 1
+ *     - sets status = "question"
+ *     - sets timeRemaining = 15
+ *     - sets questionStartedAt = Date.now()
+ *     - sets questionEndsAt = Date.now() + 15000
+ *     - resets selectedAnswerIndex, isCorrect, answerTimeSeconds, xpEarnedLastQuestion for active players (!hasSubmitted)
+ */
+export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
+  console.log("[LIVE] ADVANCE LEADERBOARD -> NEXT/FINISHED START", { pin });
+  const gameId = await getFirebaseGameIdByPin(pin);
+  if (!gameId) return false;
 
-    // STEP 3: Transition leaderboard -> question OR leaderboard -> finished
-    console.log("[LIVE] ADVANCE LEADERBOARD -> NEXT/FINISHED START", { pin });
+  const gameRef = ref(database, `games/${gameId}`);
 
+  try {
     let isFinished = false;
 
-    const step2Result = await runTransaction(gameRef, (currentData) => {
+    const result = await runTransaction(gameRef, (currentData) => {
       if (!currentData || currentData.status !== "leaderboard") {
-        return undefined; // Abort if host terminated or state changed
+        return undefined; // Abort if not in leaderboard state
       }
 
       const quizId = currentData.quizId || "hallo";
       const questions = getQuestionsForQuiz(quizId);
       const currentIdx = currentData.currentQuestionIndex || 0;
-      const isLast = currentIdx >= questions.length - 1;
+      const totalQ = currentData.totalQuestions || questions.length;
+      const isLast = currentIdx >= totalQ - 1;
 
       if (isLast) {
         currentData.status = "finished";
@@ -688,8 +714,8 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
       return currentData;
     });
 
-    if (!step2Result.committed) {
-      console.log("[LIVE] advanceAfterQuestion: leaderboard -> next transaction skipped");
+    if (!result.committed) {
+      console.log("[LIVE] startNextFirebaseQuestion transaction skipped (not in leaderboard state)");
       return false;
     }
 
@@ -705,7 +731,7 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
     return true;
   } catch (error: any) {
     console.error("[LIVE] FIREBASE ERROR", {
-      operation: "advanceAfterQuestion",
+      operation: "startNextFirebaseQuestion",
       pin,
       gameId,
       error: error?.message || error,
