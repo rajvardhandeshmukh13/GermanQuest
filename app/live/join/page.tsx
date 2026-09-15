@@ -16,6 +16,7 @@ function JoinLiveGameForm() {
   const [pin, setPin] = React.useState(initialPin);
   const [nickname, setNickname] = React.useState("");
   const [error, setError] = React.useState("");
+  const [isJoining, setIsJoining] = React.useState(false);
 
   const handleJoin = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
@@ -34,27 +35,21 @@ function JoinLiveGameForm() {
       return;
     }
 
-    // Try synchronous local lookup or Firebase lookup
-    let game = getLiveGameByPin(cleanPin);
-    if (!game) {
-      const fbResult = await joinLiveGame(cleanPin, cleanName);
-      if (fbResult) {
+    setIsJoining(true);
+    try {
+      const result = await joinLiveGame(cleanPin, cleanName);
+      if (result) {
         router.push(
-          `/live/game/${cleanPin}/lobby?role=player&playerId=${fbResult.player.id}`
+          `/live/game/${cleanPin}/lobby?role=player&playerId=${result.player.id}`
         );
-        return;
+      } else {
+        setError("Game PIN not found or game is no longer active. Check that the host has created the game!");
+        setIsJoining(false);
       }
-      setError("Game PIN not found. Make sure the host has created the game!");
-      return;
-    }
-
-    const result = joinLiveGame(cleanPin, cleanName);
-    if (result) {
-      router.push(
-        `/live/game/${cleanPin}/lobby?role=player&playerId=${result.player.id}`
-      );
-    } else {
-      setError("Failed to join game. Please try again.");
+    } catch (err) {
+      console.error("Join live game error:", err);
+      setError("Unable to connect to the live game. Please check your internet connection.");
+      setIsJoining(false);
     }
   };
 
@@ -144,10 +139,11 @@ function JoinLiveGameForm() {
                 type="submit"
                 variant="gold"
                 size="lg"
+                disabled={isJoining}
                 icon={<ArrowRight size={18} />}
                 className="w-full font-bold text-base shadow-md pt-2"
               >
-                JOIN GAME
+                {isJoining ? "JOINING GAME..." : "JOIN GAME"}
               </GQButton>
             </form>
           </div>

@@ -115,20 +115,29 @@ export function getLiveGameByPin(pin: string): LiveGame | null {
   }
 }
 
-export function joinLiveGame(
+export async function joinLiveGame(
   pin: string,
   nickname: string
-): { game: LiveGame; player: LivePlayer } | null {
-  const game = getLiveGameByPin(pin);
-
+): Promise<{ game: LiveGame; player: LivePlayer } | null> {
   const trimmedName = nickname.trim().slice(0, 16) || "Player";
 
-  // Async Firebase join
-  joinFirebaseLiveGame(pin, trimmedName).catch(() => {});
+  try {
+    const firebaseResult = await joinFirebaseLiveGame(pin, trimmedName);
+    if (firebaseResult) {
+      broadcastLocalUpdate(pin, firebaseResult.game);
+      return firebaseResult;
+    }
+  } catch (error) {
+    console.error("Firebase live join failed:", error);
+  }
 
-  if (!game) return null;
+  // Local fallback for same-device / offline development
+  const localGame = getLiveGameByPin(pin);
+  if (!localGame) {
+    return null;
+  }
 
-  let player = game.players.find(
+  let player = localGame.players.find(
     (p) => p.name.toLowerCase() === trimmedName.toLowerCase()
   );
 
@@ -141,13 +150,13 @@ export function joinLiveGame(
       currentStreak: 0,
       bestStreak: 0,
       isHost: false,
-      rank: game.players.length + 1,
+      rank: localGame.players.length + 1,
     };
-    game.players.push(player);
-    broadcastLocalUpdate(pin, game);
+    localGame.players.push(player);
+    broadcastLocalUpdate(pin, localGame);
   }
 
-  return { game, player };
+  return { game: localGame, player };
 }
 
 export function addDemoPlayers(pin: string, count: number = 5): LiveGame | null {
