@@ -11,6 +11,7 @@ import {
   terminateLiveGame,
   submitPlayerQuizEarly,
   finishCurrentFirebaseQuestion,
+  advanceAfterQuestion,
   type LiveGame,
 } from "@/lib/live-game";
 import { getQuizById, QUIZZES } from "@/lib/quiz-data";
@@ -44,13 +45,15 @@ function LiveGamePlayContent() {
   const [showSubmitEarlyConfirm, setShowSubmitEarlyConfirm] = React.useState(false);
   const [isTerminating, setIsTerminating] = React.useState(false);
   const [isEndingQuestion, setIsEndingQuestion] = React.useState(false);
+  const [endingError, setEndingError] = React.useState<string | null>(null);
   const [terminateError, setTerminateError] = React.useState<string | null>(null);
 
   /**
    * Prevent double-firing of host transition triggers.
-   * This ref is reset whenever the Firebase status/question changes.
+   * Reset whenever the Firebase status/question changes.
    */
   const transitionInProgressRef = React.useRef(false);
+  const advancingResultsRef = React.useRef<string | null>(null);
 
   // ── Mount + Firebase subscription ─────────────────────────────────────────
   React.useEffect(() => {
@@ -81,6 +84,24 @@ function LiveGamePlayContent() {
     setIsEndingQuestion(false);
   }, [game?.currentQuestionIndex, game?.status]);
 
+  // ── Host-controlled automatic transition: RESULTS -> LEADERBOARD -> NEXT QUESTION / FINISHED ──
+  React.useEffect(() => {
+    if (role !== "host" || !game || game.status !== "results") return;
+
+    const key = `${game.currentQuestionIndex}_results`;
+    if (advancingResultsRef.current === key) return;
+    advancingResultsRef.current = key;
+
+    console.log("[LIVE] host detected RESULTS status, triggering advanceAfterQuestion", {
+      pin,
+      questionIndex: game.currentQuestionIndex,
+    });
+
+    advanceAfterQuestion(pin).catch((err) => {
+      console.error("[LIVE] advanceAfterQuestion failed", err);
+    });
+  }, [role, game?.status, game?.currentQuestionIndex, pin]);
+
   // ── Host: timer reached zero ───────────────────────────────────────────────
   // Declared here (before any conditional return) to satisfy Rules of Hooks.
   // Uses optional chaining because game may be null on first render.
@@ -89,16 +110,21 @@ function LiveGamePlayContent() {
     if (transitionInProgressRef.current) return;
     transitionInProgressRef.current = true;
 
-    const qs = getQuestionsForQuiz(game!.quizId);
-    const q = qs[game!.currentQuestionIndex % qs.length];
-    const correctIdx = q
-      ? Math.max(0, q.options.indexOf(q.correctAnswer))
-      : 0;
-
     try {
-      await finishCurrentFirebaseQuestion(pin, correctIdx);
+      const qs = getQuestionsForQuiz(game!.quizId);
+      const q = qs[game!.currentQuestionIndex % qs.length];
+      const correctIdx = q
+        ? Math.max(0, q.options.indexOf(q.correctAnswer))
+        : 0;
+
+      console.log("[LIVE] Timer reached zero, calling finishCurrentFirebaseQuestion");
+      const success = await finishCurrentFirebaseQuestion(pin, correctIdx);
+      if (!success) {
+        console.error("[LIVE] finishCurrentFirebaseQuestion returned false on timer expiry");
+      }
     } catch (err) {
-      console.error("handleTimeUp finishCurrentFirebaseQuestion error:", err);
+      console.error("[LIVE] Firebase transition failed", err);
+    } finally {
       transitionInProgressRef.current = false;
     }
   }, [role, game?.status, game?.quizId, game?.currentQuestionIndex, pin]);
@@ -193,28 +219,32 @@ function LiveGamePlayContent() {
       return;
 
     setOptimisticAnswer(index);
-    // submitLiveAnswer writes to Firebase; checkAndAutoAdvanceQuestionIfAllAnswered
-    // runs inside submitFirebaseLiveAnswer after the write — no React effects needed.
     submitLiveAnswer(pin, playerId, index, game.timeRemaining, correctAnswerIndex);
   };
 
   // ── Host: END QUESTION EARLY ──────────────────────────────────────────────
-  // Calls finishCurrentFirebaseQuestion() — the single authoritative finalizer.
-  // advanceAfterQuestion() is called inside it, driving results->leaderboard->next.
   const handleHostEndQuestion = async () => {
     if (!isHost || !currentQuestion || game.status !== "question") return;
     if (transitionInProgressRef.current || isEndingQuestion) return;
 
     transitionInProgressRef.current = true;
     setIsEndingQuestion(true);
+    setEndingError(null);
 
     try {
-      await finishCurrentFirebaseQuestion(pin, correctAnswerIndex);
+      console.log("[LIVE] Host clicked END QUESTION EARLY");
+      const success = await finishCurrentFirebaseQuestion(pin, correctAnswerIndex);
+      if (!success) {
+        setEndingError("Failed to end question early in Firebase.");
+      }
+    } catch (err) {
+      console.error("[LIVE] Firebase transition failed", err);
+      setEndingError("Error ending question. Please check network connection.");
     } finally {
-      // Reset handled by the Firebase status change effect
+      setIsEndingQuestion(false);
+      transitionInProgressRef.current = false;
     }
   };
-
 
   // ── Host: terminate quiz ───────────────────────────────────────────────────
   const handleHostTerminateQuiz = async () => {
@@ -228,7 +258,7 @@ function LiveGamePlayContent() {
         setShowTerminateConfirm(false);
       }
     } catch (err) {
-      console.error("Terminate Quiz error:", err);
+      console.error("[LIVE] Firebase transition failed", err);
       setTerminateError("An error occurred while terminating the quiz.");
     } finally {
       setIsTerminating(false);
@@ -371,10 +401,17 @@ function LiveGamePlayContent() {
                   {/* Host Control Bar */}
                   {isHost && (
                     <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-card border border-[#10233F]/10 shadow-2xs">
-                      <span className="text-xs font-bold text-muted-foreground">
-                        HOST CONTROL BAR: Answers Submitted (
-                        {answeredActiveCount} / {activePlayers.length})
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-bold text-muted-foreground">
+                          HOST CONTROL BAR: Answers Submitted (
+                          {answeredActiveCount} / {activePlayers.length})
+                        </span>
+                        {endingError && (
+                          <span className="text-xs font-bold text-rose-600">
+                            ({endingError})
+                          </span>
+                        )}
+                      </div>
 
                       <div className="flex items-center gap-2">
                         <GQButton

@@ -13,10 +13,10 @@ import {
   joinFirebaseLiveGame,
   startFirebaseLiveGame,
   submitFirebaseLiveAnswer,
-  advanceFirebaseLiveGameState,
   subscribeToFirebaseLiveGame,
   calculateRanks,
   finishCurrentFirebaseQuestion,
+  advanceAfterQuestion,
   terminateFirebaseLiveGame,
   submitPlayerQuizEarlyInFirebase,
 } from "./firebase-live-game";
@@ -276,9 +276,13 @@ export async function advanceLiveGameState(
   nextStatus: LiveGameStatus
 ): Promise<LiveGame | null> {
   try {
-    await advanceFirebaseLiveGameState(pin, nextStatus);
+    if (nextStatus === "results") {
+      await finishCurrentFirebaseQuestion(pin);
+    } else if (nextStatus === "leaderboard") {
+      await advanceAfterQuestion(pin);
+    }
   } catch (err) {
-    console.warn("advanceFirebaseLiveGameState warning:", err);
+    console.warn("advanceLiveGameState warning:", err);
   }
 
   return getLiveGameByPin(pin);
@@ -306,9 +310,9 @@ export async function submitPlayerQuizEarly(
 }
 
 /**
- * Re-export finishCurrentFirebaseQuestion for use in play/page.tsx host controls.
+ * Re-export finishCurrentFirebaseQuestion and advanceAfterQuestion for use in play/page.tsx host controls.
  */
-export { finishCurrentFirebaseQuestion } from "./firebase-live-game";
+export { finishCurrentFirebaseQuestion, advanceAfterQuestion } from "./firebase-live-game";
 
 export function subscribeToLiveGame(
   pin: string,
