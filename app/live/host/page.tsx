@@ -15,10 +15,20 @@ export default function HostGamePage() {
   const router = useRouter();
   const profile = usePlayerStats();
   const [selectedQuiz, setSelectedQuiz] = React.useState<Quiz>(QUIZZES[0]);
+  const [isCreating, setIsCreating] = React.useState<boolean>(false);
+  const [error, setError] = React.useState<string | null>(null);
 
-  const handleCreateGame = () => {
-    const game = createLiveGame(selectedQuiz.id);
-    router.push(`/live/game/${game.pin}/lobby?role=host`);
+  const handleCreateGame = async () => {
+    setIsCreating(true);
+    setError(null);
+    try {
+      const game = await createLiveGame(selectedQuiz.id);
+      router.push(`/live/game/${game.pin}/lobby?role=host`);
+    } catch (err) {
+      console.error("Failed to create live game:", err);
+      setError("Failed to create live game. Please check your network connection and try again.");
+      setIsCreating(false);
+    }
   };
 
   return (
@@ -142,14 +152,21 @@ export default function HostGamePage() {
                   </div>
                 </div>
 
+                {error && (
+                  <div className="p-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-800 text-xs font-bold text-center">
+                    {error}
+                  </div>
+                )}
+
                 <GQButton
                   variant="teal"
                   size="lg"
                   onClick={handleCreateGame}
+                  disabled={isCreating}
                   icon={<ArrowRight size={18} />}
                   className="w-full font-bold text-base shadow-md mt-2"
                 >
-                  CREATE GAME
+                  {isCreating ? "CREATING GAME..." : "CREATE GAME"}
                 </GQButton>
               </div>
             </div>

@@ -65,17 +65,20 @@ export function calculateRanks(playersRecord: Record<string, LivePlayer> | LiveP
  * 1. Create a Live Game in Firebase Realtime Database
  */
 export async function createFirebaseLiveGame(
-  quizId: string = "hallo",
-  preferredPin?: string
+  quizId: string = "hallo"
 ): Promise<LiveGame> {
   const quiz = getQuizById(quizId) || QUIZZES[0];
-  let pin = preferredPin || getRandomPin();
+  let pin = getRandomPin();
 
-  // Check PIN collisions in gamesByPin index
+  // Check PIN collisions in gamesByPin index (up to 10 attempts)
   let attempts = 0;
-  while (attempts < 5) {
-    const pinSnap = await get(child(ref(database), `gamesByPin/${pin}`));
-    if (!pinSnap.exists()) break;
+  while (attempts < 10) {
+    try {
+      const pinSnap = await get(child(ref(database), `gamesByPin/${pin}`));
+      if (!pinSnap.exists()) break;
+    } catch (err) {
+      console.warn("PIN collision check warning:", err);
+    }
     pin = getRandomPin();
     attempts++;
   }
@@ -106,7 +109,7 @@ export async function createFirebaseLiveGame(
     createdAt: Date.now(),
   };
 
-  // Write PIN lookup index and Game object
+  // Write PIN lookup index and Game object to Firebase RTDB
   await set(ref(database, `gamesByPin/${pin}`), {
     gameId,
     status: "lobby",

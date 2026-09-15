@@ -98,46 +98,10 @@ function broadcastLocalUpdate(pin: string, game: LiveGame) {
 
 /* ── Live Engine API (Firebase + Local Fallback Sync) ─────────────── */
 
-export function createLiveGame(quizId: string = "hallo"): LiveGame {
-  const quiz = getQuizById(quizId) || QUIZZES[0];
-  let pin = getRandomPin();
-
-  const hostPlayer: LivePlayer = {
-    id: "host-user",
-    name: "Host Teacher",
-    avatar: "HT",
-    score: 0,
-    currentStreak: 0,
-    bestStreak: 0,
-    isHost: true,
-    rank: 1,
-  };
-
-  const game: LiveGame = {
-    gameId: `game-${Date.now()}`,
-    pin,
-    hostId: hostPlayer.id,
-    quizId: quiz.id,
-    status: "lobby",
-    currentQuestionIndex: 0,
-    totalQuestions: quiz.questionCount || 8,
-    timeRemaining: 15,
-    players: [hostPlayer],
-    createdAt: Date.now(),
-  };
-
-  broadcastLocalUpdate(pin, game);
-
-  // Async sync with Firebase Realtime Database
-  createFirebaseLiveGame(quizId, pin)
-    .then((fbGame) => {
-      broadcastLocalUpdate(fbGame.pin, fbGame);
-    })
-    .catch(() => {
-      // Fallback active
-    });
-
-  return game;
+export async function createLiveGame(quizId: string = "hallo"): Promise<LiveGame> {
+  const fbGame = await createFirebaseLiveGame(quizId);
+  broadcastLocalUpdate(fbGame.pin, fbGame);
+  return fbGame;
 }
 
 export function getLiveGameByPin(pin: string): LiveGame | null {
