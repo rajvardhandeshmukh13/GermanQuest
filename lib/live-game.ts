@@ -129,7 +129,7 @@ export function createLiveGame(quizId: string = "hallo"): LiveGame {
   broadcastLocalUpdate(pin, game);
 
   // Async sync with Firebase Realtime Database
-  createFirebaseLiveGame(quizId)
+  createFirebaseLiveGame(quizId, pin)
     .then((fbGame) => {
       broadcastLocalUpdate(fbGame.pin, fbGame);
     })

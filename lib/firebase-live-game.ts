@@ -64,9 +64,12 @@ export function calculateRanks(playersRecord: Record<string, LivePlayer> | LiveP
 /**
  * 1. Create a Live Game in Firebase Realtime Database
  */
-export async function createFirebaseLiveGame(quizId: string = "hallo"): Promise<LiveGame> {
+export async function createFirebaseLiveGame(
+  quizId: string = "hallo",
+  preferredPin?: string
+): Promise<LiveGame> {
   const quiz = getQuizById(quizId) || QUIZZES[0];
-  let pin = getRandomPin();
+  let pin = preferredPin || getRandomPin();
 
   // Check PIN collisions in gamesByPin index
   let attempts = 0;
