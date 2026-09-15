@@ -81,6 +81,28 @@ function LiveGamePlayContent() {
     setIsEndingQuestion(false);
   }, [game?.currentQuestionIndex, game?.status]);
 
+  // ── Host: timer reached zero ───────────────────────────────────────────────
+  // Declared here (before any conditional return) to satisfy Rules of Hooks.
+  // Uses optional chaining because game may be null on first render.
+  const handleTimeUp = React.useCallback(async () => {
+    if (role !== "host" || game?.status !== "question") return;
+    if (transitionInProgressRef.current) return;
+    transitionInProgressRef.current = true;
+
+    const qs = getQuestionsForQuiz(game!.quizId);
+    const q = qs[game!.currentQuestionIndex % qs.length];
+    const correctIdx = q
+      ? Math.max(0, q.options.indexOf(q.correctAnswer))
+      : 0;
+
+    try {
+      await finishCurrentFirebaseQuestion(pin, correctIdx);
+    } catch (err) {
+      console.error("handleTimeUp finishCurrentFirebaseQuestion error:", err);
+      transitionInProgressRef.current = false;
+    }
+  }, [role, game?.status, game?.quizId, game?.currentQuestionIndex, pin]);
+
   // ── NavBar element (shared across all render branches) ────────────────────
   const navBarElement = (
     <NavBar
@@ -193,26 +215,6 @@ function LiveGamePlayContent() {
     }
   };
 
-  // ── Host: timer reached zero ───────────────────────────────────────────────
-  // Same function — finishCurrentFirebaseQuestion is idempotent.
-  const handleTimeUp = React.useCallback(async () => {
-    if (role !== "host" || game?.status !== "question") return;
-    if (transitionInProgressRef.current) return;
-    transitionInProgressRef.current = true;
-
-    const qs = getQuestionsForQuiz(game.quizId);
-    const q = qs[game.currentQuestionIndex % qs.length];
-    const correctIdx = q
-      ? Math.max(0, q.options.indexOf(q.correctAnswer))
-      : 0;
-
-    try {
-      await finishCurrentFirebaseQuestion(pin, correctIdx);
-    } catch (err) {
-      console.error("handleTimeUp finishCurrentFirebaseQuestion error:", err);
-      transitionInProgressRef.current = false;
-    }
-  }, [role, game?.status, game?.quizId, game?.currentQuestionIndex, pin]);
 
   // ── Host: terminate quiz ───────────────────────────────────────────────────
   const handleHostTerminateQuiz = async () => {
