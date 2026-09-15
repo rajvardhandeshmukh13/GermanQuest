@@ -72,6 +72,7 @@ export async function createFirebaseLiveGame(
   quizId: string = "hallo"
 ): Promise<LiveGame> {
   const quiz = getQuizById(quizId) || QUIZZES[0];
+  const questions = getQuestionsForQuiz(quiz.id);
   let pin = getRandomPin();
 
   let attempts = 0;
@@ -106,7 +107,7 @@ export async function createFirebaseLiveGame(
     quizId: quiz.id,
     status: "lobby",
     currentQuestionIndex: 0,
-    totalQuestions: quiz.questionCount || 8,
+    totalQuestions: questions.length || quiz.questionCount || 8,
     timeRemaining: 15,
     players: [hostPlayer],
     createdAt: Date.now(),
@@ -209,12 +210,13 @@ export async function joinFirebaseLiveGame(
 }
 
 /**
- * 4. Host Starts Live Game
+ * 4. Host Starts Live Game (lobby -> question)
  */
 export async function startFirebaseLiveGame(
   pin: string,
   durationSeconds: number = 15
 ): Promise<boolean> {
+  console.log("[LIVE] LOBBY -> QUESTION START", { pin });
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) return false;
 
@@ -231,6 +233,7 @@ export async function startFirebaseLiveGame(
   };
 
   await update(ref(database), updates);
+  console.log("[LIVE] LOBBY -> QUESTION SUCCESS", { pin, gameId });
   return true;
 }
 
@@ -336,6 +339,9 @@ export async function checkAndAutoAdvanceQuestionIfAllAnswered(
 
   console.log("[LIVE] AUTO ADVANCE CHECK", {
     pin,
+    gameId,
+    currentQuestionIndex: rawGame.currentQuestionIndex,
+    status: rawGame.status,
     activePlayersCount: activePlayers.length,
     answeredPlayersCount: answeredPlayers.length,
   });
@@ -391,7 +397,7 @@ export async function submitPlayerQuizEarlyInFirebase(
  * Completely independent of question advancement.
  */
 export async function terminateFirebaseLiveGame(pin: string): Promise<boolean> {
-  console.log("[LIVE] TERMINATE START", { pin });
+  console.log("[LIVE] TERMINATED START", { pin });
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) {
     const err = new Error(`Game ID not found for pin ${pin}`);
@@ -426,7 +432,7 @@ export async function terminateFirebaseLiveGame(pin: string): Promise<boolean> {
     });
 
     if (result.committed) {
-      console.log("[LIVE] TERMINATE SUCCESS");
+      console.log("[LIVE] TERMINATED SUCCESS", { pin, gameId });
       await set(ref(database, `gamesByPin/${pin}/status`), "terminated");
       return true;
     } else {
@@ -445,19 +451,19 @@ export async function terminateFirebaseLiveGame(pin: string): Promise<boolean> {
 }
 
 /**
- * A. QUESTION → RESULTS
+ * 1. QUESTION → RESULTS
  * Exactly ONE function responsible for finalizing the current question.
  *
  * Uses ATOMIC Firebase runTransaction compare-and-set:
  * - Only ONE caller wins the race condition (question -> results)
- * - Idempotent: returns true if game is already no longer in "question" state.
+ * - Idempotent: returns true if game is already no longer in "question" status.
  * - Updates scores, streaks, bot answers, unanswered human timeouts, and player ranks atomically.
  */
 export async function finishCurrentFirebaseQuestion(
   pin: string,
   forceCorrectAnswerIndex?: number
 ): Promise<boolean> {
-  console.log("[LIVE] FINISH QUESTION START", { pin });
+  console.log("[LIVE] QUESTION -> RESULTS START", { pin });
 
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) {
@@ -474,17 +480,20 @@ export async function finishCurrentFirebaseQuestion(
 
   try {
     let wasAlreadyFinalized = false;
+    let currentIdx = 0;
 
     const result = await runTransaction(gameRef, (currentData) => {
       if (!currentData) {
         return currentData;
       }
 
+      currentIdx = currentData.currentQuestionIndex || 0;
+
       console.log("[LIVE] GAME STATE inside transaction", {
         gameId,
         pin,
         status: currentData.status,
-        currentQuestionIndex: currentData.currentQuestionIndex,
+        currentQuestionIndex: currentIdx,
       });
 
       // IDEMPOTENT GUARD: Only transition if currently in "question" status
@@ -499,7 +508,6 @@ export async function finishCurrentFirebaseQuestion(
       } else {
         const quizId = currentData.quizId || "hallo";
         const questions = getQuestionsForQuiz(quizId);
-        const currentIdx = currentData.currentQuestionIndex || 0;
         const currentQuestion = questions[currentIdx % questions.length];
         correctAnswerIndex = currentQuestion
           ? Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer))
@@ -569,21 +577,22 @@ export async function finishCurrentFirebaseQuestion(
       currentData.players = updatedPlayersMap;
 
       currentData.status = "results";
+      currentData.timeRemaining = 0;
 
       return currentData;
     });
 
     if (wasAlreadyFinalized) {
-      console.log("[LIVE] Question was already finalized (idempotent exit)");
+      console.log("[LIVE] QUESTION -> RESULTS: already finalized (idempotent exit)");
       return true;
     }
 
     if (result.committed) {
-      console.log("[LIVE] FINISH QUESTION SUCCESS");
+      console.log("[LIVE] QUESTION -> RESULTS SUCCESS", { pin, gameId, currentQuestionIndex: currentIdx });
       await set(ref(database, `gamesByPin/${pin}/status`), "results");
       return true;
     } else {
-      console.log("[LIVE] Transaction not committed (another client finalized first)");
+      console.log("[LIVE] QUESTION -> RESULTS: transaction skipped (another client finalized first)");
       return false;
     }
   } catch (error: any) {
@@ -598,25 +607,28 @@ export async function finishCurrentFirebaseQuestion(
 }
 
 /**
- * B. RESULTS → LEADERBOARD
+ * 2. RESULTS → LEADERBOARD
  * advanceAfterQuestion(pin)
  *
  * Uses ATOMIC Firebase runTransaction compare-and-set:
  * - Transitions status from "results" -> "leaderboard"
  */
 export async function advanceAfterQuestion(pin: string): Promise<boolean> {
-  console.log("[LIVE] ADVANCE RESULTS -> LEADERBOARD START", { pin });
+  console.log("[LIVE] RESULTS -> LEADERBOARD START", { pin });
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) return false;
 
   const gameRef = ref(database, `games/${gameId}`);
 
   try {
+    let currentIdx = 0;
+
     const result = await runTransaction(gameRef, (currentData) => {
       if (!currentData || currentData.status !== "results") {
         return undefined; // Abort if not in results state
       }
 
+      currentIdx = currentData.currentQuestionIndex || 0;
       currentData.status = "leaderboard";
       const playerList = Object.values(currentData.players || {}) as LivePlayer[];
       const rankedPlayers = calculateRanks(playerList);
@@ -630,11 +642,11 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
     });
 
     if (!result.committed) {
-      console.log("[LIVE] advanceAfterQuestion: transaction skipped (not in results state)");
+      console.log("[LIVE] RESULTS -> LEADERBOARD transaction skipped (not in results state)");
       return false;
     }
 
-    console.log("[LIVE] ADVANCE RESULTS -> LEADERBOARD SUCCESS");
+    console.log("[LIVE] RESULTS -> LEADERBOARD SUCCESS", { pin, gameId, currentQuestionIndex: currentIdx });
     await set(ref(database, `gamesByPin/${pin}/status`), "leaderboard");
     return true;
   } catch (error: any) {
@@ -649,7 +661,7 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
 }
 
 /**
- * C. LEADERBOARD → QUESTION (next question) OR LEADERBOARD → FINISHED
+ * 3. LEADERBOARD → QUESTION (next question) OR LEADERBOARD → FINISHED
  * startNextFirebaseQuestion(pin)
  *
  * Uses ATOMIC Firebase runTransaction compare-and-set:
@@ -664,7 +676,7 @@ export async function advanceAfterQuestion(pin: string): Promise<boolean> {
  *     - resets selectedAnswerIndex, isCorrect, answerTimeSeconds, xpEarnedLastQuestion for active players (!hasSubmitted)
  */
 export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
-  console.log("[LIVE] ADVANCE LEADERBOARD -> NEXT/FINISHED START", { pin });
+  console.log("[LIVE] LEADERBOARD -> NEXT QUESTION / FINISHED START", { pin });
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) return false;
 
@@ -672,6 +684,7 @@ export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
 
   try {
     let isFinished = false;
+    let finalIdx = 0;
 
     const result = await runTransaction(gameRef, (currentData) => {
       if (!currentData || currentData.status !== "leaderboard") {
@@ -686,7 +699,9 @@ export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
 
       if (isLast) {
         currentData.status = "finished";
+        currentData.timeRemaining = 0;
         isFinished = true;
+        finalIdx = currentIdx;
       } else {
         const nextIdx = currentIdx + 1;
         const now = Date.now();
@@ -697,6 +712,7 @@ export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
         currentData.timeRemaining = 15;
         currentData.questionStartedAt = now;
         currentData.questionEndsAt = endsAt;
+        finalIdx = nextIdx;
 
         // Reset per-question answer fields for active (non-submitted) players
         const playersMap = currentData.players || {};
@@ -715,7 +731,7 @@ export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
     });
 
     if (!result.committed) {
-      console.log("[LIVE] startNextFirebaseQuestion transaction skipped (not in leaderboard state)");
+      console.log("[LIVE] LEADERBOARD -> NEXT QUESTION transaction skipped (not in leaderboard state)");
       return false;
     }
 
@@ -723,9 +739,9 @@ export async function startNextFirebaseQuestion(pin: string): Promise<boolean> {
     await set(ref(database, `gamesByPin/${pin}/status`), finalStatus);
 
     if (isFinished) {
-      console.log("[LIVE] ADVANCE LEADERBOARD -> FINISHED SUCCESS");
+      console.log("[LIVE] LEADERBOARD -> FINISHED SUCCESS", { pin, gameId });
     } else {
-      console.log("[LIVE] ADVANCE LEADERBOARD -> QUESTION SUCCESS");
+      console.log("[LIVE] LEADERBOARD -> NEXT QUESTION SUCCESS", { pin, gameId, newQuestionIndex: finalIdx });
     }
 
     return true;
@@ -800,5 +816,3 @@ export function subscribeToFirebaseLiveGame(
     }
   };
 }
-
-

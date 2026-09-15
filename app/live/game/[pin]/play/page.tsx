@@ -89,59 +89,53 @@ function LiveGamePlayContent() {
   React.useEffect(() => {
     if (role !== "host" || !game || game.status !== "results") return;
 
-    const key = `${game.currentQuestionIndex}:results`;
+    const key = `${game.gameId}:${game.currentQuestionIndex}:results`;
     if (resultsTransitionKeyRef.current === key) return;
     resultsTransitionKeyRef.current = key;
 
     console.log("[LIVE] Host scheduling RESULTS -> LEADERBOARD transition in 3s", {
       pin,
+      gameId: game.gameId,
       questionIndex: game.currentQuestionIndex,
     });
 
-    const timer = setTimeout(() => {
-      if (game.status === "results") {
-        console.log("[LIVE] 3s elapsed, executing advanceAfterQuestion");
-        advanceAfterQuestion(pin).catch((err: any) => {
-          console.error("[LIVE] FIREBASE ERROR", {
-            operation: "advanceAfterQuestionEffect",
-            pin,
-            error: err?.message || err,
-          });
+    setTimeout(() => {
+      console.log("[LIVE] 3s elapsed, executing advanceAfterQuestion", { pin });
+      advanceAfterQuestion(pin).catch((err: any) => {
+        console.error("[LIVE] FIREBASE ERROR", {
+          operation: "advanceAfterQuestionEffect",
+          pin,
+          error: err?.message || err,
         });
-      }
+      });
     }, 3000);
-
-    return () => clearTimeout(timer);
-  }, [role, game?.status, game?.currentQuestionIndex, pin]);
+  }, [role, game?.status, game?.currentQuestionIndex, game?.gameId, pin]);
 
   // ── Host-controlled transition: LEADERBOARD -> NEXT QUESTION / FINISHED (after 3 seconds) ──
   React.useEffect(() => {
     if (role !== "host" || !game || game.status !== "leaderboard") return;
 
-    const key = `${game.currentQuestionIndex}:leaderboard`;
+    const key = `${game.gameId}:${game.currentQuestionIndex}:leaderboard`;
     if (leaderboardTransitionKeyRef.current === key) return;
     leaderboardTransitionKeyRef.current = key;
 
     console.log("[LIVE] Host scheduling LEADERBOARD -> QUESTION/FINISHED transition in 3s", {
       pin,
+      gameId: game.gameId,
       questionIndex: game.currentQuestionIndex,
     });
 
-    const timer = setTimeout(() => {
-      if (game.status === "leaderboard") {
-        console.log("[LIVE] 3s elapsed, executing startNextFirebaseQuestion");
-        startNextFirebaseQuestion(pin).catch((err: any) => {
-          console.error("[LIVE] FIREBASE ERROR", {
-            operation: "startNextFirebaseQuestionEffect",
-            pin,
-            error: err?.message || err,
-          });
+    setTimeout(() => {
+      console.log("[LIVE] 3s elapsed, executing startNextFirebaseQuestion", { pin });
+      startNextFirebaseQuestion(pin).catch((err: any) => {
+        console.error("[LIVE] FIREBASE ERROR", {
+          operation: "startNextFirebaseQuestionEffect",
+          pin,
+          error: err?.message || err,
         });
-      }
+      });
     }, 3000);
-
-    return () => clearTimeout(timer);
-  }, [role, game?.status, game?.currentQuestionIndex, pin]);
+  }, [role, game?.status, game?.currentQuestionIndex, game?.gameId, pin]);
 
   // ── Host: timer reached zero ───────────────────────────────────────────────
   // Declared here (before any conditional return) to satisfy Rules of Hooks.
