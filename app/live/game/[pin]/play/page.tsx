@@ -446,63 +446,60 @@ function LiveGamePlayContent() {
               )}
 
             {/* VIEW 4: QUESTION RESULTS */}
-            {game.status === "results" &&
-              currentQuestion &&
-              (isHost || !currentPlayer?.hasSubmitted) && (
-                <div className="space-y-6">
-                  <LiveQuestionResults
-                    key="results"
-                    correctAnswerText={currentQuestion.correctAnswer}
-                    explanation={currentQuestion.explanation}
-                    players={game.players}
-                    currentPlayerId={playerId}
-                    isHost={isHost}
-                    isLastQuestion={isLastQuestion}
-                  />
+            {game.status === "results" && currentQuestion && (
+              <div className="space-y-6">
+                <LiveQuestionResults
+                  key="results"
+                  correctAnswerText={currentQuestion.correctAnswer}
+                  explanation={currentQuestion.explanation}
+                  players={game.players}
+                  currentPlayerId={playerId}
+                  isHost={isHost}
+                  isLastQuestion={isLastQuestion}
+                />
 
-                  {isHost && (
-                    <div className="flex justify-center pt-2">
-                      <GQButton
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setShowTerminateConfirm(true)}
-                        icon={<Square size={14} className="text-rose-600" />}
-                        className="border-rose-300 text-rose-700 hover:bg-rose-50 font-bold text-xs"
-                      >
-                        TERMINATE QUIZ
-                      </GQButton>
-                    </div>
-                  )}
-                </div>
-              )}
+                {isHost && (
+                  <div className="flex justify-center pt-2">
+                    <GQButton
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowTerminateConfirm(true)}
+                      icon={<Square size={14} className="text-rose-600" />}
+                      className="border-rose-300 text-rose-700 hover:bg-rose-50 font-bold text-xs"
+                    >
+                      TERMINATE QUIZ
+                    </GQButton>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* VIEW 5: LIVE LEADERBOARD */}
-            {game.status === "leaderboard" &&
-              (isHost || !currentPlayer?.hasSubmitted) && (
-                <div className="space-y-6">
-                  <LiveLeaderboardView
-                    key="leaderboard"
-                    players={game.players}
-                    currentPlayerId={playerId}
-                    isHost={isHost}
-                    isLastQuestion={isLastQuestion}
-                  />
+            {game.status === "leaderboard" && (
+              <div className="space-y-6">
+                <LiveLeaderboardView
+                  key="leaderboard"
+                  players={game.players}
+                  currentPlayerId={playerId}
+                  isHost={isHost}
+                  isLastQuestion={isLastQuestion}
+                />
 
-                  {isHost && (
-                    <div className="flex justify-center pt-2">
-                      <GQButton
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setShowTerminateConfirm(true)}
-                        icon={<Square size={14} className="text-rose-600" />}
-                        className="border-rose-300 text-rose-700 hover:bg-rose-50 font-bold text-xs"
-                      >
-                        TERMINATE QUIZ
-                      </GQButton>
-                    </div>
-                  )}
-                </div>
-              )}
+                {isHost && (
+                  <div className="flex justify-center pt-2">
+                    <GQButton
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setShowTerminateConfirm(true)}
+                      icon={<Square size={14} className="text-rose-600" />}
+                      className="border-rose-300 text-rose-700 hover:bg-rose-50 font-bold text-xs"
+                    >
+                      TERMINATE QUIZ
+                    </GQButton>
+                  </div>
+                )}
+              </div>
+            )}
           </AnimatePresence>
 
           {/* Modal: Host Terminate Quiz Confirmation */}

@@ -5,9 +5,11 @@ import {
   update,
   onValue,
   child,
+  runTransaction,
 } from "firebase/database";
 import { database } from "./firebase";
 import { getQuizById, QUIZZES } from "./quiz-data";
+import { getQuestionsForQuiz } from "./quiz-questions-data";
 import type { LiveGame, LivePlayer, LiveGameStatus } from "./live-game";
 
 export interface LiveAnswerData {
@@ -135,8 +137,12 @@ export async function getFirebaseGameIdByPin(pin: string): Promise<string | null
     if (!snap.exists()) return null;
     const val = snap.val();
     return val.gameId || null;
-  } catch (err) {
-    console.error("[LIVE] Firebase transition failed", err);
+  } catch (err: any) {
+    console.error("[LIVE] FIREBASE ERROR", {
+      operation: "getFirebaseGameIdByPin",
+      pin,
+      error: err?.message || err,
+    });
     return null;
   }
 }
@@ -297,7 +303,7 @@ export async function submitFirebaseLiveAnswer(
 
   await update(ref(database), updates);
 
-  // Auto-advance check using fresh Firebase data
+  // Check for auto-advance using fresh Firebase data
   await checkAndAutoAdvanceQuestionIfAllAnswered(pin);
 
   return true;
@@ -324,6 +330,16 @@ export async function checkAndAutoAdvanceQuestionIfAllAnswered(
   const playerList = Object.values(playersMap) as LivePlayer[];
 
   const activePlayers = playerList.filter((p) => !p.isHost && !p.hasSubmitted);
+  const answeredPlayers = activePlayers.filter(
+    (p) => typeof p.selectedAnswerIndex === "number" && p.selectedAnswerIndex >= 0
+  );
+
+  console.log("[LIVE] AUTO ADVANCE CHECK", {
+    pin,
+    activePlayersCount: activePlayers.length,
+    answeredPlayersCount: answeredPlayers.length,
+  });
+
   if (activePlayers.length === 0) return false;
 
   const allAnswered = activePlayers.every(
@@ -332,9 +348,8 @@ export async function checkAndAutoAdvanceQuestionIfAllAnswered(
 
   if (!allAnswered) return false;
 
-  console.log("[LIVE] All active players answered, auto-advancing question");
+  console.log("[LIVE] All active players answered, triggering finishCurrentFirebaseQuestion");
   const quizId = rawGame.quizId || "hallo";
-  const { getQuestionsForQuiz } = await import("./quiz-questions-data");
   const questions = getQuestionsForQuiz(quizId);
   const currentIdx = rawGame.currentQuestionIndex || 0;
   const currentQuestion = questions[currentIdx % questions.length];
@@ -352,6 +367,7 @@ export async function submitPlayerQuizEarlyInFirebase(
   pin: string,
   playerId: string
 ): Promise<boolean> {
+  console.log("[LIVE] SUBMIT QUIZ EARLY START", { pin, playerId });
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) return false;
 
@@ -371,281 +387,329 @@ export async function submitPlayerQuizEarlyInFirebase(
 
 /**
  * 8. Host Terminates Live Quiz
+ * Atomic transaction transition to "terminated".
  * Completely independent of question advancement.
- * Calculates final ranks and updates status = "terminated".
  */
 export async function terminateFirebaseLiveGame(pin: string): Promise<boolean> {
-  console.log("[LIVE] terminateFirebaseLiveGame START", { pin });
+  console.log("[LIVE] TERMINATE START", { pin });
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) {
-    console.error("[LIVE] Firebase transition failed: Game ID not found for pin", pin);
+    const err = new Error(`Game ID not found for pin ${pin}`);
+    console.error("[LIVE] FIREBASE ERROR", {
+      operation: "terminateFirebaseLiveGame",
+      pin,
+      error: err.message,
+    });
     return false;
   }
 
+  const gameRef = ref(database, `games/${gameId}`);
+
   try {
-    const gameSnap = await get(ref(database, `games/${gameId}`));
-    if (!gameSnap.exists()) {
-      console.error("[LIVE] Firebase transition failed: Game not found", gameId);
-      return false;
-    }
+    const result = await runTransaction(gameRef, (currentData) => {
+      if (!currentData) return currentData;
 
-    const rawGame = gameSnap.val();
-    const playerList = Object.values(rawGame.players || {}) as LivePlayer[];
-    const rankedPlayers = calculateRanks(playerList);
+      if (currentData.status === "finished" || currentData.status === "terminated") {
+        return undefined; // Already finished or terminated
+      }
 
-    const updates: Record<string, unknown> = {
-      [`games/${gameId}/status`]: "terminated",
-      [`gamesByPin/${pin}/status`]: "terminated",
-    };
+      const playerList = Object.values(currentData.players || {}) as LivePlayer[];
+      const rankedPlayers = calculateRanks(playerList);
+      const updatedPlayersMap: Record<string, LivePlayer> = {};
+      rankedPlayers.forEach((p) => {
+        updatedPlayersMap[p.id] = p;
+      });
+      currentData.players = updatedPlayersMap;
 
-    rankedPlayers.forEach((p) => {
-      updates[`games/${gameId}/players/${p.id}/rank`] = p.rank;
-      updates[`games/${gameId}/players/${p.id}/previousRank`] = p.previousRank;
+      currentData.status = "terminated";
+      return currentData;
     });
 
-    await update(ref(database), updates);
-    console.log("[LIVE] Game terminated successfully");
-    return true;
-  } catch (error) {
-    console.error("[LIVE] Firebase transition failed", error);
+    if (result.committed) {
+      console.log("[LIVE] TERMINATE SUCCESS");
+      await set(ref(database, `gamesByPin/${pin}/status`), "terminated");
+      return true;
+    } else {
+      console.log("[LIVE] Terminate skipped (already finished or terminated)");
+      return false;
+    }
+  } catch (error: any) {
+    console.error("[LIVE] FIREBASE ERROR", {
+      operation: "terminateFirebaseLiveGame",
+      pin,
+      gameId,
+      error: error?.message || error,
+    });
     return false;
   }
 }
 
 /**
  * A. QUESTION → RESULTS
- * Exactly ONE function responsible for finalizing the current question:
- * finishCurrentFirebaseQuestion(pin, forceCorrectAnswerIndex?)
+ * Exactly ONE function responsible for finalizing the current question.
  *
- * It must:
- * - get gameId from gamesByPin/{pin}
- * - read games/{gameId}
- * - return false if game doesn't exist
- * - return true immediately if status is no longer "question" (idempotent)
- * - determine current question & calculate correct answer index
- * - finalize demo-player answers & unanswered human players
- * - calculate/update player scores, streaks and ranks
- * - write: games/{gameId}/status = "results", gamesByPin/{pin}/status = "results", player ranks
- * - NOT recursively call itself
- * - NOT wait for another Firebase listener
- * - NOT depend on React state
- * - resolve/reject normally and quickly
+ * Uses ATOMIC Firebase runTransaction compare-and-set:
+ * - Only ONE caller wins the race condition (question -> results)
+ * - Idempotent: returns true if game is already no longer in "question" state.
+ * - Updates scores, streaks, bot answers, unanswered human timeouts, and player ranks atomically.
  */
 export async function finishCurrentFirebaseQuestion(
   pin: string,
   forceCorrectAnswerIndex?: number
 ): Promise<boolean> {
-  console.log("[LIVE] finish question START", { pin });
+  console.log("[LIVE] FINISH QUESTION START", { pin });
 
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) {
-    console.error("[LIVE] Firebase transition failed: Game ID not found for pin", pin);
-    return false;
+    const err = new Error(`Game ID not found for pin ${pin}`);
+    console.error("[LIVE] FIREBASE ERROR", {
+      operation: "finishCurrentFirebaseQuestion",
+      pin,
+      error: err.message,
+    });
+    throw err;
   }
 
+  const gameRef = ref(database, `games/${gameId}`);
+
   try {
-    const gameSnap = await get(ref(database, `games/${gameId}`));
-    if (!gameSnap.exists()) {
-      console.error("[LIVE] Firebase transition failed: Game not found", gameId);
-      return false;
-    }
+    let wasAlreadyFinalized = false;
 
-    const rawGame = gameSnap.val();
-    console.log("[LIVE] current Firebase status", rawGame.status);
+    const result = await runTransaction(gameRef, (currentData) => {
+      if (!currentData) {
+        return currentData;
+      }
 
-    // IDEMPOTENT GUARD: If status is not "question", return true immediately
-    if (rawGame.status !== "question") {
-      console.log("[LIVE] Question already finalized or status is not question:", rawGame.status);
+      console.log("[LIVE] GAME STATE inside transaction", {
+        gameId,
+        pin,
+        status: currentData.status,
+        currentQuestionIndex: currentData.currentQuestionIndex,
+      });
+
+      // IDEMPOTENT GUARD: Only transition if currently in "question" status
+      if (currentData.status !== "question") {
+        wasAlreadyFinalized = true;
+        return undefined; // Abort transaction
+      }
+
+      let correctAnswerIndex = 0;
+      if (typeof forceCorrectAnswerIndex === "number") {
+        correctAnswerIndex = forceCorrectAnswerIndex;
+      } else {
+        const quizId = currentData.quizId || "hallo";
+        const questions = getQuestionsForQuiz(quizId);
+        const currentIdx = currentData.currentQuestionIndex || 0;
+        const currentQuestion = questions[currentIdx % questions.length];
+        correctAnswerIndex = currentQuestion
+          ? Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer))
+          : 0;
+      }
+
+      const playersMap = currentData.players || {};
+
+      Object.keys(playersMap).forEach((pId) => {
+        const player = playersMap[pId] as LivePlayer;
+        if (player.isHost) return;
+
+        if (
+          player.selectedAnswerIndex !== undefined &&
+          player.selectedAnswerIndex !== null &&
+          player.selectedAnswerIndex >= 0
+        ) {
+          // Real submitted answer — keep exact result
+          return;
+        }
+
+        if (pId.startsWith("demo-")) {
+          // DEMO BOT: simulate answer if unanswered
+          const isCorrect = Math.random() < 0.7;
+          const chosen = isCorrect
+            ? correctAnswerIndex
+            : (correctAnswerIndex + 1) % 4;
+          const timeRemaining = Math.floor(Math.random() * 10) + 3;
+
+          let score = player.score || 0;
+          let streak = player.currentStreak || 0;
+          let bestStreak = player.bestStreak || 0;
+          let xp = 0;
+
+          if (isCorrect) {
+            xp = 100 + timeRemaining * 8 + streak * 10;
+            score += xp;
+            streak += 1;
+            if (streak > bestStreak) bestStreak = streak;
+          } else {
+            streak = 0;
+          }
+
+          player.selectedAnswerIndex = chosen;
+          player.isCorrect = isCorrect;
+          player.xpEarnedLastQuestion = xp;
+          player.score = score;
+          player.currentStreak = streak;
+          player.bestStreak = bestStreak;
+        } else {
+          // Real human participant unanswered: timed out (-1)
+          player.selectedAnswerIndex = -1;
+          player.isCorrect = false;
+          player.xpEarnedLastQuestion = 0;
+          player.currentStreak = 0;
+        }
+      });
+
+      // Recalculate ranks based on current scores
+      const playerList = Object.values(playersMap) as LivePlayer[];
+      const rankedPlayers = calculateRanks(playerList);
+
+      const updatedPlayersMap: Record<string, LivePlayer> = {};
+      rankedPlayers.forEach((p) => {
+        updatedPlayersMap[p.id] = p;
+      });
+      currentData.players = updatedPlayersMap;
+
+      currentData.status = "results";
+
+      return currentData;
+    });
+
+    if (wasAlreadyFinalized) {
+      console.log("[LIVE] Question was already finalized (idempotent exit)");
       return true;
     }
 
-    let correctAnswerIndex = 0;
-    if (typeof forceCorrectAnswerIndex === "number") {
-      correctAnswerIndex = forceCorrectAnswerIndex;
+    if (result.committed) {
+      console.log("[LIVE] FINISH QUESTION SUCCESS");
+      await set(ref(database, `gamesByPin/${pin}/status`), "results");
+      return true;
     } else {
-      const quizId = rawGame.quizId || "hallo";
-      const { getQuestionsForQuiz } = await import("./quiz-questions-data");
-      const questions = getQuestionsForQuiz(quizId);
-      const currentIdx = rawGame.currentQuestionIndex || 0;
-      const currentQuestion = questions[currentIdx % questions.length];
-      correctAnswerIndex = currentQuestion
-        ? Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer))
-        : 0;
+      console.log("[LIVE] Transaction not committed (another client finalized first)");
+      return false;
     }
-
-    const playersMap = rawGame.players || {};
-    const updates: Record<string, unknown> = {};
-
-    Object.values(playersMap).forEach((p: unknown) => {
-      const player = p as LivePlayer & { id: string };
-      if (player.isHost) return;
-
-      if (
-        player.selectedAnswerIndex !== undefined &&
-        player.selectedAnswerIndex !== null &&
-        player.selectedAnswerIndex >= 0
-      ) {
-        // Real submitted answer — keep exact result
-        return;
-      }
-
-      if (typeof player.id === "string" && player.id.startsWith("demo-")) {
-        // DEMO BOT: simulate answer if unanswered
-        const isCorrect = Math.random() < 0.7;
-        const chosen = isCorrect
-          ? correctAnswerIndex
-          : (correctAnswerIndex + 1) % 4;
-        const timeRemaining = Math.floor(Math.random() * 10) + 3;
-
-        let score = player.score || 0;
-        let streak = player.currentStreak || 0;
-        let bestStreak = player.bestStreak || 0;
-        let xp = 0;
-
-        if (isCorrect) {
-          xp = 100 + timeRemaining * 8 + streak * 10;
-          score += xp;
-          streak += 1;
-          if (streak > bestStreak) bestStreak = streak;
-        } else {
-          streak = 0;
-        }
-
-        updates[`games/${gameId}/players/${player.id}/selectedAnswerIndex`] = chosen;
-        updates[`games/${gameId}/players/${player.id}/isCorrect`] = isCorrect;
-        updates[`games/${gameId}/players/${player.id}/xpEarnedLastQuestion`] = xp;
-        updates[`games/${gameId}/players/${player.id}/score`] = score;
-        updates[`games/${gameId}/players/${player.id}/currentStreak`] = streak;
-        updates[`games/${gameId}/players/${player.id}/bestStreak`] = bestStreak;
-      } else {
-        // Real human participant unanswered: timed out
-        updates[`games/${gameId}/players/${player.id}/selectedAnswerIndex`] = -1;
-        updates[`games/${gameId}/players/${player.id}/isCorrect`] = false;
-        updates[`games/${gameId}/players/${player.id}/xpEarnedLastQuestion`] = 0;
-        updates[`games/${gameId}/players/${player.id}/currentStreak`] = 0;
-      }
+  } catch (error: any) {
+    console.error("[LIVE] FIREBASE ERROR", {
+      operation: "finishCurrentFirebaseQuestion",
+      pin,
+      gameId,
+      error: error?.message || error,
     });
-
-    // Recalculate ranks
-    const playerList = Object.values(playersMap) as LivePlayer[];
-    const rankedPlayers = calculateRanks(playerList);
-    rankedPlayers.forEach((p) => {
-      updates[`games/${gameId}/players/${p.id}/rank`] = p.rank;
-      updates[`games/${gameId}/players/${p.id}/previousRank`] = p.previousRank;
-    });
-
-    console.log("[LIVE] writing RESULTS");
-    updates[`games/${gameId}/status`] = "results";
-    updates[`gamesByPin/${pin}/status`] = "results";
-
-    await update(ref(database), updates);
-    console.log("[LIVE] RESULTS written");
-
-    return true;
-  } catch (error) {
-    console.error("[LIVE] Firebase transition failed", error);
     throw error;
   }
 }
 
 /**
- * B. RESULTS → LEADERBOARD → NEXT QUESTION
+ * B. RESULTS → LEADERBOARD → NEXT QUESTION / FINISHED
  * advanceAfterQuestion(pin)
  *
- * Behavior:
- * - read current Firebase game
- * - if status !== "results", return false
- * - update status to "leaderboard"
- * - wait approximately 2500ms
- * - re-read Firebase
- * - if current question is last question: status = "finished", return true
- * - otherwise: increment currentQuestionIndex by 1, reset player fields, set status = "question"
+ * Uses ATOMIC Firebase runTransaction compare-and-set:
+ * - Step 1: atomic transition from "results" -> "leaderboard"
+ * - Waits ~2500ms
+ * - Step 2: atomic transition from "leaderboard" -> "question" (+1 index) OR "finished"
  */
 export async function advanceAfterQuestion(pin: string): Promise<boolean> {
+  console.log("[LIVE] ADVANCE RESULTS -> LEADERBOARD START", { pin });
   const gameId = await getFirebaseGameIdByPin(pin);
   if (!gameId) return false;
 
+  const gameRef = ref(database, `games/${gameId}`);
+
   try {
-    let snap = await get(ref(database, `games/${gameId}`));
-    if (!snap.exists()) return false;
-    let rawGame = snap.val();
+    // STEP 1: Transition results -> leaderboard
+    const step1Result = await runTransaction(gameRef, (currentData) => {
+      if (!currentData || currentData.status !== "results") {
+        return undefined; // Abort if not in results state
+      }
 
-    if (rawGame.status !== "results") {
-      console.log("[LIVE] advanceAfterQuestion skipped: status is not results:", rawGame.status);
-      return false;
-    }
+      currentData.status = "leaderboard";
+      const playerList = Object.values(currentData.players || {}) as LivePlayer[];
+      const rankedPlayers = calculateRanks(playerList);
+      const updatedPlayersMap: Record<string, LivePlayer> = {};
+      rankedPlayers.forEach((p) => {
+        updatedPlayersMap[p.id] = p;
+      });
+      currentData.players = updatedPlayersMap;
 
-    console.log("[LIVE] advancing to leaderboard");
-    const playerList = Object.values(rawGame.players || {}) as LivePlayer[];
-    const rankedPlayers = calculateRanks(playerList);
-    const leadUpdates: Record<string, unknown> = {
-      [`games/${gameId}/status`]: "leaderboard",
-      [`gamesByPin/${pin}/status`]: "leaderboard",
-    };
-    rankedPlayers.forEach((p) => {
-      leadUpdates[`games/${gameId}/players/${p.id}/rank`] = p.rank;
-      leadUpdates[`games/${gameId}/players/${p.id}/previousRank`] = p.previousRank;
+      return currentData;
     });
 
-    await update(ref(database), leadUpdates);
-
-    // Wait ~2500ms on leaderboard
-    await sleep(2500);
-
-    // Re-read Firebase state
-    snap = await get(ref(database, `games/${gameId}`));
-    if (!snap.exists()) return false;
-    rawGame = snap.val();
-
-    if (rawGame.status !== "leaderboard") {
-      console.log("[LIVE] advanceAfterQuestion skipped: status is no longer leaderboard:", rawGame.status);
+    if (!step1Result.committed) {
+      console.log("[LIVE] advanceAfterQuestion: results -> leaderboard transaction skipped (not in results state)");
       return false;
     }
 
-    const quizId = rawGame.quizId || "hallo";
-    const { getQuestionsForQuiz } = await import("./quiz-questions-data");
-    const questions = getQuestionsForQuiz(quizId);
-    const currentIdx = rawGame.currentQuestionIndex || 0;
-    const isLastQuestion = currentIdx >= questions.length - 1;
+    console.log("[LIVE] ADVANCE RESULTS -> LEADERBOARD SUCCESS");
+    await set(ref(database, `gamesByPin/${pin}/status`), "leaderboard");
 
-    if (isLastQuestion) {
-      console.log("[LIVE] advancing to finished");
-      await update(ref(database), {
-        [`games/${gameId}/status`]: "finished",
-        [`gamesByPin/${pin}/status`]: "finished",
-      });
-      return true;
-    } else {
-      console.log("[LIVE] advancing to next question");
-      const nextIdx = currentIdx + 1;
-      const now = Date.now();
-      const endsAt = now + 15000;
-      const playersMap = rawGame.players || {};
+    // STEP 2: Wait ~2500ms on leaderboard
+    await sleep(2500);
 
-      const nextQUpdates: Record<string, unknown> = {
-        [`games/${gameId}/status`]: "question",
-        [`gamesByPin/${pin}/status`]: "question",
-        [`games/${gameId}/currentQuestionIndex`]: nextIdx,
-        [`games/${gameId}/timeRemaining`]: 15,
-        [`games/${gameId}/questionStartedAt`]: now,
-        [`games/${gameId}/questionEndsAt`]: endsAt,
-      };
+    // STEP 3: Transition leaderboard -> question OR leaderboard -> finished
+    console.log("[LIVE] ADVANCE LEADERBOARD -> NEXT/FINISHED START", { pin });
 
-      Object.keys(playersMap).forEach((pId) => {
-        const p = playersMap[pId] as LivePlayer;
-        if (!p.hasSubmitted) {
-          nextQUpdates[`games/${gameId}/players/${pId}/selectedAnswerIndex`] = null;
-          nextQUpdates[`games/${gameId}/players/${pId}/isCorrect`] = null;
-          nextQUpdates[`games/${gameId}/players/${pId}/answerTimeSeconds`] = null;
-          nextQUpdates[`games/${gameId}/players/${pId}/xpEarnedLastQuestion`] = null;
-        }
-      });
+    let isFinished = false;
 
-      await update(ref(database), nextQUpdates);
-      return true;
+    const step2Result = await runTransaction(gameRef, (currentData) => {
+      if (!currentData || currentData.status !== "leaderboard") {
+        return undefined; // Abort if host terminated or state changed
+      }
+
+      const quizId = currentData.quizId || "hallo";
+      const questions = getQuestionsForQuiz(quizId);
+      const currentIdx = currentData.currentQuestionIndex || 0;
+      const isLast = currentIdx >= questions.length - 1;
+
+      if (isLast) {
+        currentData.status = "finished";
+        isFinished = true;
+      } else {
+        const nextIdx = currentIdx + 1;
+        const now = Date.now();
+        const endsAt = now + 15000;
+
+        currentData.status = "question";
+        currentData.currentQuestionIndex = nextIdx;
+        currentData.timeRemaining = 15;
+        currentData.questionStartedAt = now;
+        currentData.questionEndsAt = endsAt;
+
+        // Reset per-question answer fields for active (non-submitted) players
+        const playersMap = currentData.players || {};
+        Object.keys(playersMap).forEach((pId) => {
+          const p = playersMap[pId] as LivePlayer;
+          if (!p.hasSubmitted) {
+            p.selectedAnswerIndex = undefined;
+            p.isCorrect = undefined;
+            p.answerTimeSeconds = undefined;
+            p.xpEarnedLastQuestion = undefined;
+          }
+        });
+      }
+
+      return currentData;
+    });
+
+    if (!step2Result.committed) {
+      console.log("[LIVE] advanceAfterQuestion: leaderboard -> next transaction skipped");
+      return false;
     }
-  } catch (error) {
-    console.error("[LIVE] Firebase transition failed", error);
+
+    const finalStatus = isFinished ? "finished" : "question";
+    await set(ref(database, `gamesByPin/${pin}/status`), finalStatus);
+
+    if (isFinished) {
+      console.log("[LIVE] ADVANCE LEADERBOARD -> FINISHED SUCCESS");
+    } else {
+      console.log("[LIVE] ADVANCE LEADERBOARD -> QUESTION SUCCESS");
+    }
+
+    return true;
+  } catch (error: any) {
+    console.error("[LIVE] FIREBASE ERROR", {
+      operation: "advanceAfterQuestion",
+      pin,
+      gameId,
+      error: error?.message || error,
+    });
     return false;
   }
 }
@@ -710,4 +774,5 @@ export function subscribeToFirebaseLiveGame(
     }
   };
 }
+
 
