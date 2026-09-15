@@ -330,15 +330,23 @@ export async function advanceFirebaseLiveGameState(
     updates[`games/${gameId}/questionStartedAt`] = now;
     updates[`games/${gameId}/questionEndsAt`] = endsAt;
 
-    // Reset choices for next question
+    // Reset choices for next question (only for active, non-submitted players)
     const playersMap = rawGame.players || {};
     Object.keys(playersMap).forEach((pId) => {
-      updates[`games/${gameId}/players/${pId}/selectedAnswerIndex`] = null;
-      updates[`games/${gameId}/players/${pId}/isCorrect`] = null;
-      updates[`games/${gameId}/players/${pId}/answerTimeSeconds`] = null;
-      updates[`games/${gameId}/players/${pId}/xpEarnedLastQuestion`] = null;
+      const p = playersMap[pId];
+      if (!p.hasSubmitted) {
+        updates[`games/${gameId}/players/${pId}/selectedAnswerIndex`] = null;
+        updates[`games/${gameId}/players/${pId}/isCorrect`] = null;
+        updates[`games/${gameId}/players/${pId}/answerTimeSeconds`] = null;
+        updates[`games/${gameId}/players/${pId}/xpEarnedLastQuestion`] = null;
+      }
     });
-  } else if (nextStatus === "results" || nextStatus === "leaderboard" || nextStatus === "finished") {
+  } else if (
+    nextStatus === "results" ||
+    nextStatus === "leaderboard" ||
+    nextStatus === "finished" ||
+    nextStatus === "terminated"
+  ) {
     // Recalculate ranks across players
     const playerList = Object.values(rawGame.players || {}) as LivePlayer[];
     const rankedPlayers = calculateRanks(playerList);
@@ -353,7 +361,105 @@ export async function advanceFirebaseLiveGameState(
 }
 
 /**
- * Finalizes question results when time expires or host ends question early.
+ * Auto-advance helper: checks if all active players have answered the current question.
+ * If so, finalizes the question immediately without waiting for the timer.
+ */
+export async function checkAndAutoAdvanceQuestionIfAllAnswered(
+  pin: string,
+  rawGame?: any
+): Promise<boolean> {
+  const gameId = await getFirebaseGameIdByPin(pin);
+  if (!gameId) return false;
+
+  if (!rawGame) {
+    const snap = await get(ref(database, `games/${gameId}`));
+    if (!snap.exists()) return false;
+    rawGame = snap.val();
+  }
+
+  if (rawGame.status !== "question") return false;
+
+  const playersMap = rawGame.players || {};
+  const playerList = Object.values(playersMap) as LivePlayer[];
+
+  // Active players are non-host contestants who haven't submitted the entire quiz early
+  const activePlayers = playerList.filter((p) => !p.isHost && !p.hasSubmitted);
+
+  const allAnswered =
+    activePlayers.length === 0 ||
+    activePlayers.every((p) => typeof p.selectedAnswerIndex === "number");
+
+  if (allAnswered) {
+    const quizId = rawGame.quizId || "hallo";
+    const { getQuestionsForQuiz } = await import("./quiz-questions-data");
+    const questions = getQuestionsForQuiz(quizId);
+    const currentIdx = rawGame.currentQuestionIndex || 0;
+    const currentQuestion = questions[currentIdx % questions.length];
+    const correctAnswerIndex = currentQuestion
+      ? Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer))
+      : 0;
+
+    return await finalizeFirebaseQuestionResults(pin, correctAnswerIndex);
+  }
+
+  return false;
+}
+
+/**
+ * Player Submits Quiz Early
+ */
+export async function submitPlayerQuizEarlyInFirebase(
+  pin: string,
+  playerId: string
+): Promise<boolean> {
+  const gameId = await getFirebaseGameIdByPin(pin);
+  if (!gameId) return false;
+
+  const playerRef = ref(database, `games/${gameId}/players/${playerId}`);
+  const snap = await get(playerRef);
+  if (!snap.exists()) return false;
+
+  const updates: Record<string, any> = {
+    [`games/${gameId}/players/${playerId}/hasSubmitted`]: true,
+  };
+
+  await update(ref(database), updates);
+
+  // Check if all remaining active players have answered
+  await checkAndAutoAdvanceQuestionIfAllAnswered(pin);
+  return true;
+}
+
+/**
+ * Host Terminates Live Quiz
+ */
+export async function terminateFirebaseLiveGame(pin: string): Promise<boolean> {
+  const gameId = await getFirebaseGameIdByPin(pin);
+  if (!gameId) return false;
+
+  const gameSnap = await get(ref(database, `games/${gameId}`));
+  if (!gameSnap.exists()) return false;
+
+  const rawGame = gameSnap.val();
+  const playerList = Object.values(rawGame.players || {}) as LivePlayer[];
+  const rankedPlayers = calculateRanks(playerList);
+
+  const updates: Record<string, any> = {
+    [`games/${gameId}/status`]: "terminated",
+    [`gamesByPin/${pin}/status`]: "terminated",
+  };
+
+  rankedPlayers.forEach((p) => {
+    updates[`games/${gameId}/players/${p.id}/rank`] = p.rank;
+    updates[`games/${gameId}/players/${p.id}/previousRank`] = p.previousRank;
+  });
+
+  await update(ref(database), updates);
+  return true;
+}
+
+/**
+ * Finalizes question results when time expires, host ends question early, or all active players answered.
  * Preserves real participant answers, simulates only demo bots, and marks unanswered human players as incorrect (0 XP).
  */
 export async function finalizeFirebaseQuestionResults(
@@ -367,6 +473,8 @@ export async function finalizeFirebaseQuestionResults(
   if (!gameSnap.exists()) return false;
 
   const rawGame = gameSnap.val();
+  if (rawGame.status !== "question") return false; // Idempotent guard: only finalize if currently in question state
+
   const playersMap = rawGame.players || {};
   const updates: Record<string, any> = {};
 

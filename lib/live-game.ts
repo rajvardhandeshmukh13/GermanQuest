@@ -17,6 +17,8 @@ import {
   subscribeToFirebaseLiveGame,
   calculateRanks,
   finalizeFirebaseQuestionResults,
+  terminateFirebaseLiveGame,
+  submitPlayerQuizEarlyInFirebase,
 } from "./firebase-live-game";
 
 export type LiveGameStatus =
@@ -24,7 +26,8 @@ export type LiveGameStatus =
   | "question"
   | "results"
   | "leaderboard"
-  | "finished";
+  | "finished"
+  | "terminated";
 
 export interface LivePlayer {
   id: string;
@@ -40,6 +43,7 @@ export interface LivePlayer {
   xpEarnedLastQuestion?: number;
   rank: number;
   previousRank?: number;
+  hasSubmitted?: boolean;
 }
 
 export interface LiveGame {
@@ -368,8 +372,46 @@ export async function advanceLiveGameState(
       p.answerTimeSeconds = undefined;
       p.xpEarnedLastQuestion = undefined;
     });
-  } else if (nextStatus === "results" || nextStatus === "leaderboard") {
+  } else if (nextStatus === "results" || nextStatus === "leaderboard" || nextStatus === "terminated") {
     recalculateRanks(game);
+  }
+
+  broadcastLocalUpdate(pin, game);
+  return game;
+}
+
+export async function terminateLiveGame(pin: string): Promise<LiveGame | null> {
+  try {
+    await terminateFirebaseLiveGame(pin);
+  } catch (err) {
+    console.warn("terminateFirebaseLiveGame warning:", err);
+  }
+
+  const game = getLiveGameByPin(pin);
+  if (!game) return null;
+
+  game.status = "terminated";
+  recalculateRanks(game);
+  broadcastLocalUpdate(pin, game);
+  return game;
+}
+
+export async function submitPlayerQuizEarly(
+  pin: string,
+  playerId: string
+): Promise<LiveGame | null> {
+  try {
+    await submitPlayerQuizEarlyInFirebase(pin, playerId);
+  } catch (err) {
+    console.warn("submitPlayerQuizEarlyInFirebase warning:", err);
+  }
+
+  const game = getLiveGameByPin(pin);
+  if (!game) return null;
+
+  const player = game.players.find((p) => p.id === playerId);
+  if (player) {
+    player.hasSubmitted = true;
   }
 
   broadcastLocalUpdate(pin, game);

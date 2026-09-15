@@ -10,6 +10,8 @@ import {
   submitLiveAnswer,
   simulateDemoAnswers,
   advanceLiveGameState,
+  terminateLiveGame,
+  submitPlayerQuizEarly,
   type LiveGame,
 } from "@/lib/live-game";
 import { getQuizById, QUIZZES } from "@/lib/quiz-data";
@@ -20,7 +22,7 @@ import { LiveAnswerGrid } from "@/components/live/live-answer-grid";
 import { LiveQuestionResults } from "@/components/live/live-question-results";
 import { LiveLeaderboardView } from "@/components/live/live-leaderboard-view";
 import { FinalPodiumView } from "@/components/live/final-podium-view";
-import { Play } from "lucide-react";
+import { Play, Square, LogOut, AlertTriangle } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { fadeInUp } from "@/lib/motion";
 
@@ -38,6 +40,8 @@ function LiveGamePlayContent() {
   const [isMounted, setIsMounted] = React.useState(false);
   const [hasCheckedGame, setHasCheckedGame] = React.useState(false);
   const [optimisticAnswer, setOptimisticAnswer] = React.useState<number | null>(null);
+  const [showTerminateConfirm, setShowTerminateConfirm] = React.useState(false);
+  const [showSubmitEarlyConfirm, setShowSubmitEarlyConfirm] = React.useState(false);
 
   // Subscribe to real-time updates after hydration mount
   React.useEffect(() => {
@@ -66,15 +70,36 @@ function LiveGamePlayContent() {
     setOptimisticAnswer(null);
   }, [game?.currentQuestionIndex, game?.status]);
 
+  // Host auto-advance effect when question timer expires or all active players answered
+  React.useEffect(() => {
+    if (!game || role !== "host" || game.status !== "question") return;
+
+    const questions = getQuestionsForQuiz(game.quizId);
+    const currentQuestion = questions[game.currentQuestionIndex % questions.length];
+    if (!currentQuestion) return;
+
+    const correctAnswerIndex = Math.max(0, currentQuestion.options.indexOf(currentQuestion.correctAnswer));
+
+    const activePlayers = game.players.filter((p) => !p.isHost && !p.hasSubmitted);
+    const allActiveAnswered =
+      activePlayers.length === 0 ||
+      activePlayers.every((p) => typeof p.selectedAnswerIndex === "number" && p.selectedAnswerIndex >= 0);
+
+    if (allActiveAnswered) {
+      simulateDemoAnswers(pin, correctAnswerIndex);
+      advanceLiveGameState(pin, "results");
+    }
+  }, [game, pin, role]);
+
   const navBarElement = (
-      <NavBar
-        links={[
-          { label: "Explore", href: "/#journey" },
-          { label: "Quizzes", href: "/quizzes" },
-          { label: "Leaderboard", href: "/leaderboard" },
-          { label: "About", href: "/#how-it-works" },
-        ]}
-      />
+    <NavBar
+      links={[
+        { label: "Explore", href: "/#journey" },
+        { label: "Quizzes", href: "/quizzes" },
+        { label: "Leaderboard", href: "/leaderboard" },
+        { label: "About", href: "/#how-it-works" },
+      ]}
+    />
   );
 
   // 1. Initial Loading State (rendered on SSR and first client hydration pass)
@@ -136,9 +161,21 @@ function LiveGamePlayContent() {
       ? optimisticAnswer
       : serverAnswer;
 
+  const activePlayers = game.players.filter((p) => !p.isHost && !p.hasSubmitted);
+  const answeredActiveCount = activePlayers.filter(
+    (p) => typeof p.selectedAnswerIndex === "number" && p.selectedAnswerIndex >= 0
+  ).length;
+
   // Handlers
   const handleSelectAnswer = (index: number) => {
-    if (isHost || typeof selectedAnswerIndex === "number" || !currentQuestion || game.timeRemaining <= 0) return;
+    if (
+      isHost ||
+      currentPlayer?.hasSubmitted ||
+      typeof selectedAnswerIndex === "number" ||
+      !currentQuestion ||
+      game.timeRemaining <= 0
+    )
+      return;
     setOptimisticAnswer(index);
     submitLiveAnswer(
       pin,
@@ -193,7 +230,9 @@ function LiveGamePlayContent() {
       <LiveHeader
         pin={pin}
         currentQuestion={
-          game.status !== "finished" ? game.currentQuestionIndex + 1 : undefined
+          game.status !== "finished" && game.status !== "terminated"
+            ? game.currentQuestionIndex + 1
+            : undefined
         }
         totalQuestions={questions.length}
         playerCount={game.players.filter((p) => !p.isHost).length}
@@ -206,107 +245,284 @@ function LiveGamePlayContent() {
       <main className="flex-1 bg-background py-10 md:py-16">
         <div className="gq-container max-w-4xl">
           <AnimatePresence mode="wait">
-            {/* VIEW 1: QUESTION */}
-            {game.status === "question" && currentQuestion && (
-              <motion.div
-                key={`question-${game.currentQuestionIndex}`}
-                variants={fadeInUp}
-                initial="hidden"
-                animate="visible"
-                exit={{ opacity: 0, y: -12 }}
-                className="space-y-8"
-              >
-                {/* Question Prompt Card */}
-                <div className="rounded-3xl p-6 sm:p-10 bg-card border-2 border-primary/30 shadow-[var(--gq-shadow-md)] text-center space-y-3">
-                  <span className="text-xs font-black uppercase tracking-widest text-primary px-3 py-1 rounded-full bg-primary/10 border border-primary/20">
-                    GERMAN QUESTION
-                  </span>
-
-                  <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-black text-foreground tracking-tight leading-tight">
-                    {currentQuestion.question}
-                  </h2>
-
-                  {currentQuestion.contextPrompt && (
-                    <p className="text-sm font-semibold text-muted-foreground">
-                      {currentQuestion.contextPrompt}
-                    </p>
-                  )}
-                </div>
-
-                {/* Answer Option Grid */}
-                <LiveAnswerGrid
-                  options={currentQuestion.options}
-                  selectedIndex={selectedAnswerIndex}
-                  onSelectOption={handleSelectAnswer}
-                  disabled={isHost}
-                />
-
-                {/* Host Control Action Bar */}
-                {isHost && (
-                  <div className="flex items-center justify-between p-4 rounded-2xl bg-card border border-[#10233F]/10 shadow-2xs">
-                    <span className="text-xs font-bold text-muted-foreground">
-                      HOST CONTROL BAR: Answers Submitted (
-                      {
-                        game.players.filter(
-                          (p) => !p.isHost && typeof p.selectedAnswerIndex === "number" && p.selectedAnswerIndex >= 0
-                        ).length
-                      }{" "}
-                      / {game.players.filter((p) => !p.isHost).length})
-                    </span>
-
-                    <GQButton
-                      variant="gold"
-                      size="sm"
-                      onClick={handleHostEndQuestion}
-                      icon={<Play size={14} />}
-                    >
-                      END QUESTION EARLY
-                    </GQButton>
+            {/* VIEW 1: FINISHED OR TERMINATED */}
+            {(game.status === "finished" || game.status === "terminated") && (
+              <div key="final-view" className="space-y-6">
+                {game.status === "terminated" && (
+                  <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-900 text-xs font-black uppercase tracking-widest text-center">
+                    🛑 LIVE QUIZ WAS TERMINATED BY THE HOST
                   </div>
                 )}
-              </motion.div>
+                <FinalPodiumView
+                  key="final-podium"
+                  players={game.players}
+                  currentPlayerId={playerId}
+                  isHost={isHost}
+                  gameId={game.gameId}
+                  quizId={game.quizId}
+                  totalQuestions={questions.length}
+                  onPlayAgain={() => router.push(isHost ? "/live/host" : "/live/join")}
+                />
+              </div>
             )}
 
-            {/* VIEW 2: QUESTION RESULTS */}
-            {game.status === "results" && currentQuestion && (
-              <LiveQuestionResults
-                key="results"
-                correctAnswerText={currentQuestion.correctAnswer}
-                explanation={currentQuestion.explanation}
-                players={game.players}
-                currentPlayerId={playerId}
-                isHost={isHost}
-                isLastQuestion={isLastQuestion}
-                onNext={handleHostResultNext}
-              />
-            )}
+            {/* VIEW 2: PLAYER SUBMITTED EARLY WAITING VIEW */}
+            {game.status !== "finished" &&
+              game.status !== "terminated" &&
+              !isHost &&
+              currentPlayer?.hasSubmitted && (
+                <motion.div
+                  key="player-submitted-early"
+                  variants={fadeInUp}
+                  initial="hidden"
+                  animate="visible"
+                  className="space-y-6 max-w-3xl mx-auto text-center"
+                >
+                  <div className="p-4 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-900 text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2">
+                    <LogOut size={16} className="text-amber-600" />
+                    <span>QUIZ SUBMITTED — WAITING FOR FINAL LEADERBOARD...</span>
+                  </div>
 
-            {/* VIEW 3: LIVE LEADERBOARD */}
-            {game.status === "leaderboard" && (
-              <LiveLeaderboardView
-                key="leaderboard"
-                players={game.players}
-                currentPlayerId={playerId}
-                isHost={isHost}
-                isLastQuestion={isLastQuestion}
-                onNext={handleHostNextQuestion}
-              />
-            )}
+                  <FinalPodiumView
+                    key="early-podium-preview"
+                    players={game.players}
+                    currentPlayerId={playerId}
+                    isHost={false}
+                    gameId={game.gameId}
+                    quizId={game.quizId}
+                    totalQuestions={questions.length}
+                  />
+                </motion.div>
+              )}
 
-            {/* VIEW 4: FINAL PODIUM */}
-            {game.status === "finished" && (
-              <FinalPodiumView
-                key="finished"
-                players={game.players}
-                currentPlayerId={playerId}
-                isHost={isHost}
-                gameId={game.gameId}
-                quizId={game.quizId}
-                totalQuestions={questions.length}
-                onPlayAgain={() => router.push(isHost ? "/live/host" : "/live/join")}
-              />
-            )}
+            {/* VIEW 3: QUESTION (for host or active player) */}
+            {game.status === "question" &&
+              currentQuestion &&
+              (isHost || !currentPlayer?.hasSubmitted) && (
+                <motion.div
+                  key={`question-${game.currentQuestionIndex}`}
+                  variants={fadeInUp}
+                  initial="hidden"
+                  animate="visible"
+                  exit={{ opacity: 0, y: -12 }}
+                  className="space-y-8"
+                >
+                  {/* Question Prompt Card */}
+                  <div className="rounded-3xl p-6 sm:p-10 bg-card border-2 border-primary/30 shadow-[var(--gq-shadow-md)] text-center space-y-3">
+                    <span className="text-xs font-black uppercase tracking-widest text-primary px-3 py-1 rounded-full bg-primary/10 border border-primary/20">
+                      GERMAN QUESTION
+                    </span>
+
+                    <h2 className="font-display text-3xl sm:text-4xl lg:text-5xl font-black text-foreground tracking-tight leading-tight">
+                      {currentQuestion.question}
+                    </h2>
+
+                    {currentQuestion.contextPrompt && (
+                      <p className="text-sm font-semibold text-muted-foreground">
+                        {currentQuestion.contextPrompt}
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Answer Option Grid */}
+                  <LiveAnswerGrid
+                    options={currentQuestion.options}
+                    selectedIndex={selectedAnswerIndex}
+                    onSelectOption={handleSelectAnswer}
+                    disabled={isHost || currentPlayer?.hasSubmitted}
+                  />
+
+                  {/* Secondary Action: Player Submit Quiz Early */}
+                  {!isHost && !currentPlayer?.hasSubmitted && (
+                    <div className="flex justify-center pt-2">
+                      <GQButton
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowSubmitEarlyConfirm(true)}
+                        icon={<LogOut size={14} className="text-amber-700" />}
+                        className="text-xs font-extrabold text-amber-800 border-amber-300 bg-amber-500/5 hover:bg-amber-500/15"
+                      >
+                        SUBMIT QUIZ EARLY
+                      </GQButton>
+                    </div>
+                  )}
+
+                  {/* Host Control Action Bar */}
+                  {isHost && (
+                    <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-card border border-[#10233F]/10 shadow-2xs">
+                      <span className="text-xs font-bold text-muted-foreground">
+                        HOST CONTROL BAR: Answers Submitted (
+                        {answeredActiveCount} / {activePlayers.length})
+                      </span>
+
+                      <div className="flex items-center gap-2">
+                        <GQButton
+                          variant="gold"
+                          size="sm"
+                          onClick={handleHostEndQuestion}
+                          icon={<Play size={14} />}
+                        >
+                          END QUESTION EARLY
+                        </GQButton>
+
+                        <GQButton
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setShowTerminateConfirm(true)}
+                          icon={<Square size={14} className="text-rose-600" />}
+                          className="border-rose-300 text-rose-700 hover:bg-rose-50 font-bold"
+                        >
+                          TERMINATE QUIZ
+                        </GQButton>
+                      </div>
+                    </div>
+                  )}
+                </motion.div>
+              )}
+
+            {/* VIEW 4: QUESTION RESULTS */}
+            {game.status === "results" &&
+              currentQuestion &&
+              (isHost || !currentPlayer?.hasSubmitted) && (
+                <div className="space-y-6">
+                  <LiveQuestionResults
+                    key="results"
+                    correctAnswerText={currentQuestion.correctAnswer}
+                    explanation={currentQuestion.explanation}
+                    players={game.players}
+                    currentPlayerId={playerId}
+                    isHost={isHost}
+                    isLastQuestion={isLastQuestion}
+                    onNext={handleHostResultNext}
+                  />
+
+                  {isHost && (
+                    <div className="flex justify-center pt-2">
+                      <GQButton
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowTerminateConfirm(true)}
+                        icon={<Square size={14} className="text-rose-600" />}
+                        className="border-rose-300 text-rose-700 hover:bg-rose-50 font-bold text-xs"
+                      >
+                        TERMINATE QUIZ
+                      </GQButton>
+                    </div>
+                  )}
+                </div>
+              )}
+
+            {/* VIEW 5: LIVE LEADERBOARD */}
+            {game.status === "leaderboard" &&
+              (isHost || !currentPlayer?.hasSubmitted) && (
+                <div className="space-y-6">
+                  <LiveLeaderboardView
+                    key="leaderboard"
+                    players={game.players}
+                    currentPlayerId={playerId}
+                    isHost={isHost}
+                    isLastQuestion={isLastQuestion}
+                    onNext={handleHostNextQuestion}
+                  />
+
+                  {isHost && (
+                    <div className="flex justify-center pt-2">
+                      <GQButton
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowTerminateConfirm(true)}
+                        icon={<Square size={14} className="text-rose-600" />}
+                        className="border-rose-300 text-rose-700 hover:bg-rose-50 font-bold text-xs"
+                      >
+                        TERMINATE QUIZ
+                      </GQButton>
+                    </div>
+                  )}
+                </div>
+              )}
           </AnimatePresence>
+
+          {/* Modal Dialog: Host Terminate Quiz Confirmation */}
+          {showTerminateConfirm && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-fade-in">
+              <div className="max-w-md w-full rounded-3xl p-6 bg-card border-2 border-rose-500/30 shadow-2xl space-y-4 text-center">
+                <div className="w-12 h-12 rounded-2xl bg-rose-500/10 border border-rose-500/20 text-rose-600 flex items-center justify-center mx-auto">
+                  <AlertTriangle size={24} />
+                </div>
+
+                <h3 className="font-display text-xl font-black text-foreground">
+                  Terminate Quiz?
+                </h3>
+
+                <p className="text-sm font-semibold text-muted-foreground leading-relaxed">
+                  This will end the live quiz for all players immediately and show the final leaderboard.
+                </p>
+
+                <div className="flex items-center justify-center gap-3 pt-2">
+                  <GQButton
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowTerminateConfirm(false)}
+                  >
+                    Cancel
+                  </GQButton>
+                  <GQButton
+                    variant="gold"
+                    size="sm"
+                    className="bg-rose-600 hover:bg-rose-700 border-rose-700 text-white font-bold"
+                    onClick={async () => {
+                      setShowTerminateConfirm(false);
+                      await terminateLiveGame(pin);
+                    }}
+                  >
+                    Terminate Quiz
+                  </GQButton>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Modal Dialog: Player Submit Quiz Early Confirmation */}
+          {showSubmitEarlyConfirm && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs animate-fade-in">
+              <div className="max-w-md w-full rounded-3xl p-6 bg-card border-2 border-amber-500/30 shadow-2xl space-y-4 text-center">
+                <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-600 flex items-center justify-center mx-auto">
+                  <LogOut size={24} />
+                </div>
+
+                <h3 className="font-display text-xl font-black text-foreground">
+                  Submit Quiz?
+                </h3>
+
+                <p className="text-sm font-semibold text-muted-foreground leading-relaxed">
+                  You will leave the active quiz and receive your current personal result. You can wait for the final leaderboard afterward.
+                </p>
+
+                <div className="flex items-center justify-center gap-3 pt-2">
+                  <GQButton
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowSubmitEarlyConfirm(false)}
+                  >
+                    Continue Quiz
+                  </GQButton>
+                  <GQButton
+                    variant="teal"
+                    size="sm"
+                    className="font-bold"
+                    onClick={async () => {
+                      setShowSubmitEarlyConfirm(false);
+                      if (playerId) {
+                        await submitPlayerQuizEarly(pin, playerId);
+                      }
+                    }}
+                  >
+                    Submit Quiz
+                  </GQButton>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </main>
 
